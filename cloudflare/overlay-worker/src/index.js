@@ -2,6 +2,7 @@ const PROJECT_ID = "2";
 const FEED_SIGN = "SW9D1eZo";
 const DEFAULT_BASE = "https://www.flashscore.com";
 const DEFAULT_LANG = "ru";
+const SPORTS_TENNIS_NEWS_URL = "https://www.sports.ru/tennis/news/top/";
 const DEFAULT_MATCH_ID = "Sril3X2m";
 const DEFAULT_MATCH_URL =
   "https://www.flashscore.com/match/tennis/jasika-omar-lOWZLw6o/stewart-hamish-0j2A0w2n/?mid=Sril3X2m";
@@ -39,7 +40,13 @@ export default {
     if (url.pathname === "/overlay.css") return text(OVERLAY_CSS, "text/css; charset=utf-8");
     if (url.pathname === "/overlay.js") return text(OVERLAY_JS, "text/javascript; charset=utf-8");
     if (url.pathname === "/api/health") return json({ ok: true, service: "tennis-listen-bolshe-overlay" });
-    if (url.pathname === "/api/news/tennis") return json(news());
+    if (url.pathname === "/api/news/tennis") {
+      try {
+        return json(await sportsTennisNews(env), 200, { "cache-control": "public, max-age=120" });
+      } catch (error) {
+        return json(fallbackNews(error), 200, { "cache-control": "public, max-age=30" });
+      }
+    }
     if (url.pathname === "/api/matches") return json(matches(url.origin));
     if (url.pathname === "/api/live-matches") {
       try {
@@ -95,14 +102,117 @@ function matches(origin) {
   ];
 }
 
-function news() {
+function fallbackNews(error) {
   return {
+    ok: false,
+    source: "fallback",
+    error: error?.message || String(error || ""),
     items: [
+      { title: "Sports.ru: новости тенниса временно недоступны" },
       { title: "Tennis live overlay: счет обновляется автоматически" },
       { title: "OBS / Streamlabs / vMix: Browser Source 1920x1080" },
-      { title: "Adapter слой можно заменить на официальный источник данных" }
+      { title: "Тикер обновится автоматически после восстановления источника" }
     ]
   };
+}
+
+async function sportsTennisNews(env) {
+  const sourceUrl = String(env.SPORTS_TENNIS_NEWS_URL || SPORTS_TENNIS_NEWS_URL).trim();
+  const response = await fetch(sourceUrl, {
+    headers: {
+      "user-agent": "Mozilla/5.0 Tennis Overlay News Bot",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4"
+    },
+    cf: { cacheTtl: 120, cacheEverything: false }
+  });
+  if (!response.ok) throw new Error(`Sports.ru ${response.status}`);
+  const htmlValue = await response.text();
+  const items = parseSportsTennisNews(htmlValue, sourceUrl, 15);
+  if (!items.length) throw new Error("Sports.ru news parser returned no items");
+  return {
+    ok: true,
+    source: "sports.ru",
+    sourceUrl,
+    generatedAt: new Date().toISOString(),
+    items
+  };
+}
+
+function parseSportsTennisNews(htmlValue, sourceUrl, limit = 15) {
+  const section = sportsTopNewsSection(htmlValue);
+  const items = [];
+  const seen = new Set();
+  const paragraphPattern = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+  let match;
+  while ((match = paragraphPattern.exec(section)) && items.length < limit) {
+    const row = match[1] || "";
+    const linkMatch = row.match(/<a\s+[^>]*class=["'][^"']*\bshort-text\b[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+    if (!linkMatch) continue;
+    const title = cleanHtmlText(linkMatch[2]);
+    const url = absoluteSportsUrl(linkMatch[1]);
+    if (!title || !url) continue;
+    const key = url.split("#", 1)[0];
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const time = cleanHtmlText(row.match(/<span\s+class=["']time["'][^>]*>([\s\S]*?)<\/span>/i)?.[1] || "");
+    items.push({
+      title,
+      url,
+      source: "Sports.ru",
+      time
+    });
+  }
+  return items;
+}
+
+function sportsTopNewsSection(htmlValue) {
+  const topMarker = 'href="/tennis/news/top/?page=2"';
+  const markerIndex = htmlValue.indexOf(topMarker);
+  const startSearch = markerIndex >= 0 ? markerIndex : 0;
+  const newsStart = htmlValue.indexOf('<div class="news"', startSearch);
+  if (newsStart < 0) return htmlValue;
+  const candidates = [
+    htmlValue.indexOf('<div class="news"', newsStart + 1),
+    htmlValue.indexOf('<div class="pageNavigation"', newsStart + 1)
+  ].filter((index) => index > newsStart);
+  const newsEnd = candidates.length ? Math.min(...candidates) : htmlValue.length;
+  return htmlValue.slice(newsStart, newsEnd);
+}
+
+function absoluteSportsUrl(href) {
+  const value = decodeHtml(String(href || "").trim());
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith("/")) return `https://www.sports.ru${value}`;
+  try {
+    return new URL(value, SPORTS_TENNIS_NEWS_URL).toString();
+  } catch (_error) {
+    return "";
+  }
+}
+
+function cleanHtmlText(value) {
+  return decodeHtml(String(value || "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+function decodeHtml(value) {
+  const named = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: "\"",
+    apos: "'",
+    nbsp: " "
+  };
+  return String(value || "").replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (full, entity) => {
+    const key = entity.toLowerCase();
+    if (key[0] === "#") {
+      const code = key.startsWith("#x") ? parseInt(key.slice(2), 16) : parseInt(key.slice(1), 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : full;
+    }
+    return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : full;
+  });
 }
 
 async function telegramWebhook(request, env, origin) {

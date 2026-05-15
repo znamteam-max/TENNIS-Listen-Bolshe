@@ -7,6 +7,7 @@ Cloudflare Worker для live-теннисного оверлея и отдел�
 - Overlay: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/overlay.html`
 - Health: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/health`
 - Live matches API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/live-matches`
+- Live tennis news API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/news/tennis`
 - Telegram webhook: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/telegram/webhook`
 
 ## Telegram bot
@@ -24,6 +25,16 @@ Required GitHub repository secrets in `TENNIS-Listen-Bolshe`:
 - `TELEGRAM_WEBHOOK_SECRET` - optional long random string for Telegram webhook validation.
 
 The deploy workflow syncs these into Cloudflare Worker secrets and calls Telegram `setWebhook`.
+
+## Live News
+
+`/api/news/tennis` pulls the latest 15 tennis headlines from:
+
+```text
+https://www.sports.ru/tennis/news/top/
+```
+
+The overlay ticker refreshes this feed every minute. If Sports.ru is temporarily unavailable, the endpoint returns a small fallback ticker instead of breaking the overlay.
 
 ## Local Preview
 
