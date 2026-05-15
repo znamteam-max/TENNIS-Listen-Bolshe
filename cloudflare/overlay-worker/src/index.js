@@ -309,12 +309,12 @@ function button(textValue, callbackData) {
 
 async function liveMatches(env) {
   return (await flashscoreEvents(env))
-    .filter((match) => match.status === "live")
+    .filter((match) => match.status === "live" && isSupportedMatch(match))
     .sort((a, b) => `${a.tournament} ${a.home.shortName}`.localeCompare(`${b.tournament} ${b.home.shortName}`));
 }
 
 async function findMatch(env, matchId) {
-  return (await flashscoreEvents(env)).find((match) => match.id === matchId) || null;
+  return (await flashscoreEvents(env)).find((match) => match.id === matchId && isSupportedMatch(match)) || null;
 }
 
 async function flashscoreEvents(env) {
@@ -348,6 +348,10 @@ function normalizeEvent(record, league, base) {
   };
   match.url = flashscoreEventUrl(base, match);
   return match;
+}
+
+function isSupportedMatch(match) {
+  return !/doubles|парн/i.test(String(match.league || ""));
 }
 
 function competitor(record, sideName) {
