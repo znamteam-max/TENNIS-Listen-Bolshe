@@ -30,8 +30,45 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Sync Telegram Worker secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN is not set; skipping Telegram secret sync."
+            exit 0
+          fi
+          printf '%s' "$TELEGRAM_BOT_TOKEN" | npx wrangler secret put TELEGRAM_BOT_TOKEN
+          if [ -n "$TELEGRAM_WEBHOOK_SECRET" ]; then
+            printf '%s' "$TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+          fi
+
       - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npm run deploy
+
+      - name: Configure Telegram webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          TELEGRAM_WEBHOOK_URL: https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/telegram/webhook
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN is not set; skipping Telegram webhook setup."
+            exit 0
+          fi
+          SECRET_JSON=""
+          if [ -n "$TELEGRAM_WEBHOOK_SECRET" ]; then
+            SECRET_JSON=",\"secret_token\":\"${TELEGRAM_WEBHOOK_SECRET}\""
+          fi
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+            -H "Content-Type: application/json" \
+            --data "{\"url\":\"${TELEGRAM_WEBHOOK_URL}\",\"allowed_updates\":[\"message\",\"callback_query\"]${SECRET_JSON}}"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyCommands" \
+            -H "Content-Type: application/json" \
+            --data '{"commands":[{"command":"start","description":"открыть live-меню"},{"command":"overlay","description":"выбрать live-матч для трансляции"}]}'

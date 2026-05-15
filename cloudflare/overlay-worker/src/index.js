@@ -1,9 +1,22 @@
 const PROJECT_ID = "2";
 const FEED_SIGN = "SW9D1eZo";
 const DEFAULT_BASE = "https://www.flashscore.com";
+const DEFAULT_LANG = "ru";
 const DEFAULT_MATCH_ID = "Sril3X2m";
 const DEFAULT_MATCH_URL =
   "https://www.flashscore.com/match/tennis/jasika-omar-lOWZLw6o/stewart-hamish-0j2A0w2n/?mid=Sril3X2m";
+const TELEGRAM_WEBHOOK_PATH = "/telegram/webhook";
+
+const PROGRAM_LABELS = {
+  obs: "OBS",
+  streamlabs: "Streamlabs",
+  vmix: "vMix"
+};
+
+const MODE_LABELS = {
+  stats: "Статистика",
+  chat: "Чат"
+};
 
 const STAGES = {
   "1": "Scheduled",
@@ -28,6 +41,23 @@ export default {
     if (url.pathname === "/api/health") return json({ ok: true, service: "tennis-listen-bolshe-overlay" });
     if (url.pathname === "/api/news/tennis") return json(news());
     if (url.pathname === "/api/matches") return json(matches(url.origin));
+    if (url.pathname === "/api/live-matches") {
+      try {
+        return json({ ok: true, items: await liveMatches(env) }, 200, { "cache-control": "public, max-age=5" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 502);
+      }
+    }
+    if (url.pathname === "/telegram/health") {
+      return json({
+        ok: true,
+        botConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
+        webhookPath: TELEGRAM_WEBHOOK_PATH
+      });
+    }
+    if (url.pathname === TELEGRAM_WEBHOOK_PATH && request.method === "POST") {
+      return telegramWebhook(request, env, url.origin);
+    }
     if (url.pathname === "/api/match/flashscore") {
       try {
         return json(await flashscoreMatch(url, env), 200, { "cache-control": "public, max-age=2" });
@@ -43,8 +73,10 @@ export default {
         "/overlay.html",
         "/api/health",
         "/api/matches",
+        "/api/live-matches",
         "/api/news/tennis",
-        "/api/match/flashscore?id=Sril3X2m"
+        "/api/match/flashscore?id=Sril3X2m",
+        TELEGRAM_WEBHOOK_PATH
       ]
     });
   }
@@ -71,6 +103,378 @@ function news() {
       { title: "Adapter слой можно заменить на официальный источник данных" }
     ]
   };
+}
+
+async function telegramWebhook(request, env, origin) {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    return json({ ok: false, error: "TELEGRAM_BOT_TOKEN is not configured" }, 500);
+  }
+  const expectedSecret = String(env.TELEGRAM_WEBHOOK_SECRET || "").trim();
+  if (expectedSecret && request.headers.get("x-telegram-bot-api-secret-token") !== expectedSecret) {
+    return json({ ok: false, error: "forbidden" }, 403);
+  }
+
+  try {
+    const update = await request.json();
+    await handleTelegramUpdate(update, env, origin);
+  } catch (error) {
+    console.log("telegram webhook error", error?.stack || error?.message || String(error));
+  }
+  return json({ ok: true });
+}
+
+async function handleTelegramUpdate(update, env, origin) {
+  if (update.message) {
+    const message = update.message;
+    const chatId = message.chat?.id;
+    const textValue = String(message.text || message.caption || "").trim();
+    if (!chatId) return;
+
+    const command = textValue.split(/\s+/, 1)[0].replace(/@listen_bolshe_bot$/i, "").toLowerCase();
+    if (command === "/start" || command === "start" || command === "/overlay" || command === "overlay") {
+      const menu = await liveMenu(env);
+      await telegramApi(env, "sendMessage", {
+        chat_id: chatId,
+        text: menu.text,
+        reply_markup: menu.reply_markup,
+        disable_web_page_preview: true
+      });
+      return;
+    }
+
+    await telegramApi(env, "sendMessage", {
+      chat_id: chatId,
+      text: "Команды:\n/start - открыть live-меню\n/overlay - выбрать матч и получить URL для OBS, Streamlabs или vMix"
+    });
+    return;
+  }
+
+  if (update.callback_query) {
+    const callback = update.callback_query;
+    const chatId = callback.message?.chat?.id;
+    const messageId = callback.message?.message_id;
+    const data = String(callback.data || "");
+    if (!chatId || !messageId) return;
+    await handleTelegramCallback(env, origin, callback.id, chatId, messageId, data);
+  }
+}
+
+async function handleTelegramCallback(env, origin, callbackId, chatId, messageId, data) {
+  if (data === "live") {
+    const menu = await liveMenu(env);
+    await telegramApi(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: menu.text,
+      reply_markup: menu.reply_markup,
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("m|")) {
+    const match = await findMatch(env, data.split("|")[1]);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      return;
+    }
+    await telegramApi(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: `🎾 Матч выбран\n\n${matchTitle(match)}\n\nВыбери программу:`,
+      reply_markup: programMenu(match),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("p|")) {
+    const [, matchId, program] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      return;
+    }
+    if (!PROGRAM_LABELS[program]) {
+      await answerCallback(env, callbackId, "Программа не найдена", true);
+      return;
+    }
+    await telegramApi(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: `🎾 ${matchTitle(match)}\n\nПрограмма: ${PROGRAM_LABELS[program]}\nВыбери режим оверлея:`,
+      reply_markup: modeMenu(match, program),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("r|")) {
+    const [, matchId, program, mode] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      return;
+    }
+    await telegramApi(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: overlayInstructions(origin, match, program, mode),
+      reply_markup: readyMenu(match, program),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId, "Готово");
+    return;
+  }
+
+  await answerCallback(env, callbackId);
+}
+
+async function telegramApi(env, method, payload) {
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    console.log(`telegram ${method} failed`, await response.text());
+  }
+}
+
+function answerCallback(env, callbackQueryId, textValue = "", showAlert = false) {
+  return telegramApi(env, "answerCallbackQuery", {
+    callback_query_id: callbackQueryId,
+    text: textValue || undefined,
+    show_alert: showAlert
+  });
+}
+
+async function liveMenu(env) {
+  try {
+    const items = await liveMatches(env);
+    const rows = items.slice(0, 45).map((match) => [button(matchButtonLabel(match), `m|${match.id}`)]);
+    rows.push([button("Обновить список", "live")]);
+    if (!items.length) {
+      return {
+        text: "🎾 Live оверлей\nСейчас live-матчи не найдены. Нажми «Обновить список» через минуту.",
+        reply_markup: keyboard(rows)
+      };
+    }
+    return {
+      text: "🎾 Live оверлей\nВыбери матч для трансляции:",
+      reply_markup: keyboard(rows)
+    };
+  } catch (error) {
+    return {
+      text: `🎾 Live оверлей\nНе удалось получить live-матчи: ${error?.message || error}`,
+      reply_markup: keyboard([[button("Обновить список", "live")]])
+    };
+  }
+}
+
+function programMenu(match) {
+  return keyboard([
+    [button("OBS", `p|${match.id}|obs`), button("Streamlabs", `p|${match.id}|streamlabs`)],
+    [button("vMix", `p|${match.id}|vmix`)],
+    [button("К live матчам", "live")]
+  ]);
+}
+
+function modeMenu(match, program) {
+  return keyboard([
+    [button("Статистика", `r|${match.id}|${program}|stats`), button("Чат", `r|${match.id}|${program}|chat`)],
+    [button("Другая программа", `m|${match.id}`)],
+    [button("К live матчам", "live")]
+  ]);
+}
+
+function readyMenu(match, program) {
+  return keyboard([
+    [button("Статистика", `r|${match.id}|${program}|stats`), button("Чат", `r|${match.id}|${program}|chat`)],
+    [button("Другая программа", `m|${match.id}`)],
+    [button("К live матчам", "live")]
+  ]);
+}
+
+function keyboard(rows) {
+  return { inline_keyboard: rows };
+}
+
+function button(textValue, callbackData) {
+  return { text: textValue, callback_data: callbackData };
+}
+
+async function liveMatches(env) {
+  return (await flashscoreEvents(env))
+    .filter((match) => match.status === "live")
+    .sort((a, b) => `${a.tournament} ${a.home.shortName}`.localeCompare(`${b.tournament} ${b.home.shortName}`));
+}
+
+async function findMatch(env, matchId) {
+  return (await flashscoreEvents(env)).find((match) => match.id === matchId) || null;
+}
+
+async function flashscoreEvents(env) {
+  const base = String(env.FLASHSCORE_LIVE_BASE || DEFAULT_BASE).replace(/\/+$/, "");
+  const lang = String(env.FLASHSCORE_LANG || DEFAULT_LANG).trim() || DEFAULT_LANG;
+  const textValue = await fetchText(`${base}/x/feed/f_2_0_2_${lang}_1`, `${base}/tennis/`);
+  const events = [];
+  let league = {};
+  for (const record of parseFeed(textValue)) {
+    if (record.ZA || record.ZAF) {
+      league = record;
+      continue;
+    }
+    if (record.AA) events.push(normalizeEvent(record, league, base));
+  }
+  return events;
+}
+
+function normalizeEvent(record, league, base) {
+  const home = competitor(record, "home");
+  const away = competitor(record, "away");
+  const match = {
+    id: value(record, "AA"),
+    status: value(record, "AB") === "2" ? "live" : value(record, "AB") === "3" ? "finished" : "scheduled",
+    stageCode: value(record, "AC"),
+    tournament: tournamentName(value(league, "ZA") || value(league, "ZAF")),
+    league: value(league, "ZA") || value(league, "ZAF"),
+    home,
+    away,
+    score: scoreLabel(record)
+  };
+  match.url = flashscoreEventUrl(base, match);
+  return match;
+}
+
+function competitor(record, sideName) {
+  if (sideName === "home") {
+    return {
+      id: firstId(value(record, "PX")),
+      slug: value(record, "WU"),
+      name: value(record, "AE", "Home"),
+      shortName: value(record, "FH", value(record, "AE", "Home"))
+    };
+  }
+  return {
+    id: firstId(value(record, "PY")),
+    slug: value(record, "WV"),
+    name: value(record, "AF", "Away"),
+    shortName: value(record, "FK", value(record, "AF", "Away"))
+  };
+}
+
+function firstId(raw) {
+  return String(raw || "").split("/").filter(Boolean)[0] || "";
+}
+
+function tournamentName(raw) {
+  const textValue = String(raw || "Tennis").trim();
+  return (textValue.split(":").slice(1).join(":").trim() || textValue).replace(/\s+/g, " ");
+}
+
+function flashscoreEventUrl(base, match) {
+  const homePath = competitorPath(match.home);
+  const awayPath = competitorPath(match.away);
+  if (!homePath || !awayPath) return `${base}/match/tennis/live-match/?mid=${encodeURIComponent(match.id)}`;
+  return `${base}/match/tennis/${encodeURIComponent(homePath)}/${encodeURIComponent(awayPath)}/?mid=${encodeURIComponent(match.id)}`;
+}
+
+function competitorPath(player) {
+  if (!player.slug || !player.id) return "";
+  return String(player.slug).endsWith(`-${player.id}`) ? player.slug : `${player.slug}-${player.id}`;
+}
+
+function scoreLabel(record) {
+  const pairs = [
+    ["BA", "BB"],
+    ["BC", "BD"],
+    ["BE", "BF"],
+    ["BG", "BH"],
+    ["BI", "BJ"]
+  ];
+  const sets = pairs
+    .map(([homeKey, awayKey]) => [value(record, homeKey), value(record, awayKey)])
+    .filter(([home, away]) => home !== "" || away !== "")
+    .map(([home, away]) => `${home || "0"}-${away || "0"}`);
+  const points = [value(record, "WA"), value(record, "WB")];
+  return [sets.join(" "), points[0] || points[1] ? `${points[0] || "0"}:${points[1] || "0"}` : ""].filter(Boolean).join(" | ");
+}
+
+function matchButtonLabel(match) {
+  return truncate([stageLabel(match), match.score, `${match.home.shortName} - ${match.away.shortName}`].filter(Boolean).join(" | "), 58);
+}
+
+function matchTitle(match) {
+  return [match.tournament, `${match.home.name} - ${match.away.name}`, [stageLabel(match), match.score].filter(Boolean).join(" | ")].filter(Boolean).join("\n");
+}
+
+function stageLabel(match) {
+  if (match.status === "live") return STAGES[match.stageCode] || "Live";
+  if (match.status === "finished") return "Finished";
+  return "Scheduled";
+}
+
+function overlayInstructions(origin, match, program, mode) {
+  const programKey = PROGRAM_LABELS[program] ? program : "obs";
+  const modeKey = MODE_LABELS[mode] ? mode : "stats";
+  const url = overlayPageUrl(origin, match, modeKey);
+  return [
+    "🎾 Оверлей готов",
+    "",
+    `Матч:\n${matchTitle(match)}`,
+    "",
+    `Программа: ${PROGRAM_LABELS[programKey]}`,
+    `Режим: ${MODE_LABELS[modeKey]}`,
+    "",
+    "URL:",
+    url,
+    "",
+    "Что делать дальше:",
+    ...programSteps(programKey),
+    "",
+    "Оверлей сам обновляет данные. Если переключаешь матч, просто замени URL в источнике."
+  ].join("\n");
+}
+
+function overlayPageUrl(origin, match, mode) {
+  const sourceQuery = new URLSearchParams({ url: match.url }).toString();
+  const source = encodeURIComponent(`/api/match/flashscore?${sourceQuery}`);
+  const newsSource = encodeURIComponent("/api/news/tennis");
+  return `${origin}/overlay.html?source=${source}&news=${newsSource}&panel=${mode}&poll=3000`;
+}
+
+function programSteps(program) {
+  if (program === "vmix") {
+    return [
+      "1. vMix: Add Input -> Web Browser.",
+      "2. Вставь URL в поле Address.",
+      "3. Размер input: 1920x1080.",
+      "4. Перед эфиром нажми Reload, если окно уже было открыто."
+    ];
+  }
+  if (program === "streamlabs") {
+    return [
+      "1. Streamlabs: Sources -> Browser Source.",
+      "2. Вставь URL в поле URL.",
+      "3. Width 1920, Height 1080.",
+      "4. Перед эфиром нажми Refresh cache/current page."
+    ];
+  }
+  return [
+    "1. OBS: Sources -> Browser.",
+    "2. Вставь URL в поле URL.",
+    "3. Width 1920, Height 1080.",
+    "4. Перед эфиром нажми Refresh cache/current page."
+  ];
+}
+
+function truncate(textValue, limit) {
+  const text = String(textValue || "");
+  return text.length > limit ? `${text.slice(0, Math.max(0, limit - 1))}…` : text;
 }
 
 async function flashscoreMatch(url, env) {
