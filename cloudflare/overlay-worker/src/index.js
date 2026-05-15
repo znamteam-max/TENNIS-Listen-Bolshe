@@ -152,6 +152,7 @@ function parseSportsTennisNews(htmlValue, sourceUrl, limit = 15) {
     const title = cleanHtmlText(linkMatch[2]);
     const url = absoluteSportsUrl(linkMatch[1]);
     if (!title || !url) continue;
+    if (!/^https:\/\/www\.sports\.ru\/tennis\//i.test(url)) continue;
     const key = url.split("#", 1)[0];
     if (seen.has(key)) continue;
     seen.add(key);
