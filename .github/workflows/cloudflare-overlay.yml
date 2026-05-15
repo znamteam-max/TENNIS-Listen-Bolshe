@@ -1,5 +1,7 @@
 name: Deploy Tennis Overlay Worker
 
+# Deploys the Cloudflare Worker and syncs Telegram bot secrets when they exist.
+
 on:
   workflow_dispatch: {}
   push:
