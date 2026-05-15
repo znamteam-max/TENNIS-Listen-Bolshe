@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TENNIS Listen Bolshe</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TENNIS LIVE OVERLAY</p>
+          <h1>Панель оверлея</h1>
+        </div>
+        <a class="health" href="/api/health" target="_blank" rel="noreferrer">Server OK</a>
+      </header>
+
+      <section class="control-grid">
+        <div class="panel">
+          <h2>Матч</h2>
+          <div id="matchList" class="match-list" aria-live="polite"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Настройки</h2>
+          <label class="field">
+            <span>Режим левой панели</span>
+            <select id="panelMode">
+              <option value="stats">Статистика</option>
+              <option value="chat">Чат</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Период обновления, мс</span>
+            <input id="pollMs" type="number" min="1000" step="500" value="3000">
+          </label>
+          <label class="toggle">
+            <input id="showGuides" type="checkbox">
+            <span>Показать направляющие зон</span>
+          </label>
+        </div>
+
+        <div class="panel output-panel">
+          <h2>URL для Browser Source</h2>
+          <textarea id="overlayUrl" readonly rows="5"></textarea>
+          <div class="actions">
+            <a id="openOverlay" class="button" href="/overlay.html" target="_blank" rel="noreferrer">Открыть оверлей</a>
+            <button id="copyUrl" class="button secondary" type="button">Скопировать URL</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel notes">
+        <h2>Параметры источника</h2>
+        <p>Размер Browser Source: <strong>1920 x 1080</strong>. Фон страницы прозрачный. Для проверки зон добавьте `guides=1`.</p>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "1.0",
+  "provider": "demo",
+  "generatedAt": "2026-05-12T06:00:00.000Z",
+  "source": {
+    "eventId": "demo",
+    "url": "/data/live-match-demo.json"
+  },
+  "match": {
+    "id": "demo",
+    "title": "Alexander Zverev - Carlos Alcaraz",
+    "tournament": "ATP Masters, demo match",
+    "status": "live",
+    "stage": "Set 2",
+    "duration": "1:18"
+  },
+  "players": [
+    {
+      "side": "home",
+      "id": "zverev",
+      "name": "Alexander Zverev",
+      "shortName": "Zverev A.",
+      "country": "Germany",
+      "rank": "3",
+      "isServing": true
+    },
+    {
+      "side": "away",
+      "id": "alcaraz",
+      "name": "Carlos Alcaraz",
+      "shortName": "Alcaraz C.",
+      "country": "Spain",
+      "rank": "2",
+      "isServing": false
+    }
+  ],
+  "score": {
+    "current": {
+      "home": "30",
+      "away": "15"
+    },
+    "games": {
+      "home": "4",
+      "away": "3"
+    },
+    "sets": [
+      {
+        "label": "Set 1",
+        "homeGames": "6",
+        "awayGames": "4",
+        "winner": "home"
+      },
+      {
+        "label": "Set 2",
+        "homeGames": "4",
+        "awayGames": "3",
+        "winner": ""
+      }
+    ]
+  },
+  "statistics": [
+    {
+      "section": "Service",
+      "rows": [
+        {
+          "label": "Aces",
+          "home": "7",
+          "away": "5"
+        },
+        {
+          "label": "Double Faults",
+          "home": "1",
+          "away": "2"
+        },
+        {
+          "label": "1st serve percentage",
+          "home": "68%",
+          "away": "64%"
+        }
+      ]
+    },
+    {
+      "section": "Return",
+      "rows": [
+        {
+          "label": "1st return points won",
+          "home": "37%",
+          "away": "31%"
+        },
+        {
+          "label": "Break Points Converted",
+          "home": "2/5",
+          "away": "1/4"
+        }
+      ]
+    },
+    {
+      "section": "Points",
+      "rows": [
+        {
+          "label": "Winners",
+          "home": "21",
+          "away": "18"
+        },
+        {
+          "label": "Unforced errors",
+          "home": "14",
+          "away": "17"
+        },
+        {
+          "label": "Total Points Won",
+          "home": "58",
+          "away": "52"
+        }
+      ]
+    },
+    {
+      "section": "Games",
+      "rows": [
+        {
+          "label": "Service games won",
+          "home": "88%",
+          "away": "75%"
+        },
+        {
+          "label": "Return games won",
+          "home": "25%",
+          "away": "13%"
+        }
+      ]
+    }
+  ],
+  "matchHistory": [],
+  "currentGame": {
+    "server": "home",
+    "currentPoint": "30:15"
+  }
+}

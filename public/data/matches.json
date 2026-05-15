@@ -1,0 +1,18 @@
+[
+  {
+    "id": "flashscore-Sril3X2m",
+    "title": "Omar Jasika - Hamish Stewart",
+    "description": "Flashscore live, Challenger Bengaluru 2",
+    "provider": "flashscore",
+    "source": "/api/match/flashscore?id=Sril3X2m",
+    "news": "/data/news-demo.json"
+  },
+  {
+    "id": "demo-zverev-alcaraz",
+    "title": "Alexander Zverev - Carlos Alcaraz",
+    "description": "Локальные демо-данные",
+    "provider": "demo",
+    "source": "/data/live-match-demo.json",
+    "news": "/data/news-demo.json"
+  }
+]
