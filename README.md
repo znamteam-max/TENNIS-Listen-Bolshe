@@ -17,7 +17,8 @@ Cloudflare Worker для live-теннисного оверлея и отдел�
 1. choose a live Flashscore tennis match;
 2. choose OBS, Streamlabs, or vMix;
 3. choose `stats` or `chat` overlay mode;
-4. receive a ready Browser Source/Web Browser URL with setup steps.
+4. choose the bottom news ticker speed;
+5. receive a ready Browser Source/Web Browser URL with setup steps.
 
 Required GitHub repository secrets in `TENNIS-Listen-Bolshe`:
 
@@ -34,7 +35,7 @@ The deploy workflow syncs these into Cloudflare Worker secrets and calls Telegra
 https://www.sports.ru/tennis/news/top/
 ```
 
-The overlay ticker refreshes this feed every minute. If Sports.ru is temporarily unavailable, the endpoint returns a small fallback ticker instead of breaking the overlay.
+The overlay ticker refreshes this feed every minute, scrolls at the speed chosen in Telegram, and alternates a full news pass with the "watch the stream by the link in the description" promo line. If Sports.ru is temporarily unavailable, the endpoint returns a small fallback ticker instead of breaking the overlay.
 
 ## Local Preview
 

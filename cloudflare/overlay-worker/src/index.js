@@ -19,6 +19,12 @@ const MODE_LABELS = {
   chat: "Чат"
 };
 
+const TICKER_SPEEDS = {
+  slow: { label: "Медленно", pixelsPerSecond: 26 },
+  normal: { label: "Средне", pixelsPerSecond: 36 },
+  fast: { label: "Быстрее", pixelsPerSecond: 52 }
+};
+
 const STAGES = {
   "1": "Scheduled",
   "2": "Live",
@@ -330,11 +336,49 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
       return;
     }
+    if (!PROGRAM_LABELS[program]) {
+      await answerCallback(env, callbackId, "Программа не найдена", true);
+      return;
+    }
+    if (!MODE_LABELS[mode]) {
+      await answerCallback(env, callbackId, "Режим не найден", true);
+      return;
+    }
     await telegramApi(env, "editMessageText", {
       chat_id: chatId,
       message_id: messageId,
-      text: overlayInstructions(origin, match, program, mode),
-      reply_markup: readyMenu(match, program),
+      text: `🎾 ${matchTitle(match)}\n\nПрограмма: ${PROGRAM_LABELS[program]}\nРежим: ${MODE_LABELS[mode]}\n\nВыбери скорость нижней бегущей строки:`,
+      reply_markup: speedMenu(match, program, mode),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("s|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      return;
+    }
+    if (!PROGRAM_LABELS[program]) {
+      await answerCallback(env, callbackId, "Программа не найдена", true);
+      return;
+    }
+    if (!MODE_LABELS[mode]) {
+      await answerCallback(env, callbackId, "Режим не найден", true);
+      return;
+    }
+    if (!TICKER_SPEEDS[speed]) {
+      await answerCallback(env, callbackId, "Скорость не найдена", true);
+      return;
+    }
+    await telegramApi(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: overlayInstructions(origin, match, program, mode, speed),
+      reply_markup: readyMenu(match, program, mode, speed),
       disable_web_page_preview: true
     });
     await answerCallback(env, callbackId, "Готово");
@@ -402,9 +446,27 @@ function modeMenu(match, program) {
   ]);
 }
 
-function readyMenu(match, program) {
+function speedMenu(match, program, mode) {
+  return keyboard([
+    [
+      button("Медленно", `s|${match.id}|${program}|${mode}|slow`),
+      button("Средне", `s|${match.id}|${program}|${mode}|normal`),
+      button("Быстрее", `s|${match.id}|${program}|${mode}|fast`)
+    ],
+    [button("Другой режим", `p|${match.id}|${program}`)],
+    [button("Другая программа", `m|${match.id}`)],
+    [button("К live матчам", "live")]
+  ]);
+}
+
+function readyMenu(match, program, mode, speed) {
   return keyboard([
     [button("Статистика", `r|${match.id}|${program}|stats`), button("Чат", `r|${match.id}|${program}|chat`)],
+    [
+      button("Медленно", `s|${match.id}|${program}|${mode}|slow`),
+      button("Средне", `s|${match.id}|${program}|${mode}|normal`),
+      button("Быстрее", `s|${match.id}|${program}|${mode}|fast`)
+    ],
     [button("Другая программа", `m|${match.id}`)],
     [button("К live матчам", "live")]
   ]);
@@ -533,10 +595,11 @@ function stageLabel(match) {
   return "Scheduled";
 }
 
-function overlayInstructions(origin, match, program, mode) {
+function overlayInstructions(origin, match, program, mode, speed) {
   const programKey = PROGRAM_LABELS[program] ? program : "obs";
   const modeKey = MODE_LABELS[mode] ? mode : "stats";
-  const url = overlayPageUrl(origin, match, modeKey);
+  const speedKey = TICKER_SPEEDS[speed] ? speed : "slow";
+  const url = overlayPageUrl(origin, match, modeKey, speedKey);
   return [
     "🎾 Оверлей готов",
     "",
@@ -544,6 +607,7 @@ function overlayInstructions(origin, match, program, mode) {
     "",
     `Программа: ${PROGRAM_LABELS[programKey]}`,
     `Режим: ${MODE_LABELS[modeKey]}`,
+    `Скорость строки: ${TICKER_SPEEDS[speedKey].label}`,
     "",
     "URL:",
     url,
@@ -555,11 +619,12 @@ function overlayInstructions(origin, match, program, mode) {
   ].join("\n");
 }
 
-function overlayPageUrl(origin, match, mode) {
+function overlayPageUrl(origin, match, mode, speed = "slow") {
   const sourceQuery = new URLSearchParams({ url: match.url }).toString();
   const source = encodeURIComponent(`/api/match/flashscore?${sourceQuery}`);
   const newsSource = encodeURIComponent("/api/news/tennis");
-  return `${origin}/overlay.html?source=${source}&news=${newsSource}&panel=${mode}&poll=3000`;
+  const tickerSpeed = TICKER_SPEEDS[speed] ? speed : "slow";
+  return `${origin}/overlay.html?source=${source}&news=${newsSource}&panel=${mode}&ticker=${tickerSpeed}&poll=3000`;
 }
 
 function programSteps(program) {
@@ -874,6 +939,160 @@ const OVERLAY_HTML = `<!doctype html>
 </body>
 </html>`;
 
-const OVERLAY_CSS = `:root{--green:#caff3d;--cyan:#18d8c8;--panel:rgba(17,20,25,.88);--line:rgba(255,255,255,.16);--text:#f7f9fc;--muted:#aab3bf}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;color:var(--text);font-family:Arial,Helvetica,sans-serif}.overlay{position:relative;width:100vw;height:100vh;min-width:1280px;min-height:720px}.left-rail{position:absolute;left:34px;top:34px;bottom:78px;width:360px;display:grid;grid-template-rows:164px minmax(0,1fr) 128px;gap:18px;min-height:0}.promo-block,.stats-panel,.chat-panel,.brand-block,.scorebug{border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 20px 50px rgba(0,0,0,.28);backdrop-filter:blur(8px)}.stats-panel,.chat-panel{min-height:0;overflow:hidden}.promo-block{padding:22px;border-left:6px solid var(--green)}.promo-kicker{color:var(--green);font-size:15px;font-weight:800}.promo-title{margin-top:18px;font-size:28px;line-height:1.05;font-weight:800}.promo-meta{margin-top:10px;color:var(--muted);font-size:15px}.panel-head{display:flex;justify-content:space-between;align-items:center;min-height:44px;padding:0 16px;border-bottom:1px solid var(--line);color:var(--green);font-weight:800;font-size:14px}.stats-list{height:calc(100% - 44px);overflow:hidden;padding:12px 14px}.stat-section{margin-bottom:13px}.stat-section-title{margin-bottom:7px;color:var(--cyan);font-size:13px;font-weight:800}.stat-row{display:grid;grid-template-columns:58px 1fr 58px;align-items:center;min-height:25px;gap:8px;color:var(--text);font-size:13px}.stat-row span:nth-child(2){color:var(--muted);text-align:center}.stat-row span:last-child{text-align:right}.chat-line{margin:14px 16px 0;padding:10px 12px;border-radius:8px;background:rgba(255,255,255,.08);font-size:15px}.chat-line.muted{color:var(--muted)}.brand-block{display:grid;align-content:center;justify-items:start;padding:0 26px;background:linear-gradient(90deg,rgba(255,77,109,.92),rgba(202,255,61,.88));color:#101114}.brand-block span{font-size:40px;font-weight:900}.brand-block small{margin-top:4px;font-weight:800}.video-zone{position:absolute;left:430px;right:34px;top:34px;bottom:78px;border:1px dashed transparent}.safe-label{position:absolute;top:0;right:0;opacity:0;color:rgba(255,255,255,.5);font-size:13px}.scorebug{position:absolute;right:44px;bottom:106px;width:462px;padding:12px}.scorebug-tournament{min-height:24px;margin-bottom:8px;color:var(--green);font-size:13px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.player-row{display:grid;grid-template-columns:18px minmax(0,1fr) 54px 66px;align-items:center;min-height:42px;gap:10px;border-top:1px solid var(--line);font-size:18px;font-weight:800}.serve-dot{width:10px;height:10px;border-radius:50%;background:transparent}.player-row.serving .serve-dot{background:var(--green);box-shadow:0 0 18px var(--green)}.player-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.score-cell,.point-cell{min-height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;background:rgba(255,255,255,.1)}.point-cell{background:var(--green);color:#101114}.ticker{position:absolute;left:0;right:0;bottom:0;height:52px;overflow:hidden;background:#050608;border-top:3px solid var(--green)}.ticker-track{display:inline-flex;align-items:center;height:52px;min-width:100%;padding-left:100%;white-space:nowrap;color:var(--text);font-size:23px;font-weight:800;animation:ticker 38s linear infinite}@keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-100%)}}.guides .left-rail,.guides .video-zone,.guides .scorebug,.guides .ticker{outline:2px solid rgba(202,255,61,.75)}.guides .safe-label{opacity:1}`;
+const OVERLAY_CSS = `:root{--green:#caff3d;--cyan:#18d8c8;--panel:rgba(17,20,25,.88);--line:rgba(255,255,255,.16);--text:#f7f9fc;--muted:#aab3bf;--purple:#4b267c}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;color:var(--text);font-family:Arial,Helvetica,sans-serif}.overlay{position:relative;width:100vw;height:100vh;min-width:1280px;min-height:720px}.left-rail{position:absolute;left:34px;top:34px;bottom:78px;width:360px;display:grid;grid-template-rows:164px minmax(0,1fr) 128px;gap:18px;min-height:0}.promo-block,.stats-panel,.chat-panel,.brand-block,.scorebug{border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 20px 50px rgba(0,0,0,.28);backdrop-filter:blur(8px)}.stats-panel,.chat-panel{min-height:0;overflow:hidden}.promo-block{padding:22px;border-left:6px solid var(--green)}.promo-kicker{color:var(--green);font-size:15px;font-weight:800}.promo-title{margin-top:18px;font-size:28px;line-height:1.05;font-weight:800}.promo-meta{margin-top:10px;color:var(--muted);font-size:15px}.panel-head{display:flex;justify-content:space-between;align-items:center;min-height:44px;padding:0 16px;border-bottom:1px solid var(--line);color:var(--green);font-weight:800;font-size:14px}.stats-list{height:calc(100% - 44px);overflow:hidden;padding:12px 14px}.stat-section{margin-bottom:13px}.stat-section-title{margin-bottom:7px;color:var(--cyan);font-size:13px;font-weight:800}.stat-row{display:grid;grid-template-columns:58px 1fr 58px;align-items:center;min-height:25px;gap:8px;color:var(--text);font-size:13px}.stat-row span:nth-child(2){color:var(--muted);text-align:center}.stat-row span:last-child{text-align:right}.chat-line{margin:14px 16px 0;padding:10px 12px;border-radius:8px;background:rgba(255,255,255,.08);font-size:15px}.chat-line.muted{color:var(--muted)}.brand-block{display:grid;align-content:center;justify-items:start;padding:0 26px;background:linear-gradient(90deg,rgba(255,77,109,.92),rgba(202,255,61,.88));color:#101114}.brand-block span{font-size:40px;font-weight:900}.brand-block small{margin-top:4px;font-weight:800}.video-zone{position:absolute;left:430px;right:34px;top:34px;bottom:78px;border:1px dashed transparent}.safe-label{position:absolute;top:0;right:0;opacity:0;color:rgba(255,255,255,.5);font-size:13px}.scorebug{position:absolute;right:44px;bottom:106px;width:462px;padding:12px}.scorebug-tournament{min-height:24px;margin-bottom:8px;color:var(--green);font-size:13px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.player-row{display:grid;grid-template-columns:18px minmax(0,1fr) 54px 66px;align-items:center;min-height:42px;gap:10px;border-top:1px solid var(--line);font-size:18px;font-weight:800}.serve-dot{width:10px;height:10px;border-radius:50%;background:transparent}.player-row.serving .serve-dot{background:var(--green);box-shadow:0 0 18px var(--green)}.player-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.score-cell,.point-cell{min-height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;background:rgba(255,255,255,.1)}.point-cell{background:var(--green);color:#101114}.ticker{position:absolute;left:0;right:0;bottom:0;height:52px;overflow:hidden;background:#050608;border-top:3px solid var(--green);transition:background .25s ease,border-color .25s ease}.ticker.ticker-cta{background:var(--green);border-top-color:var(--purple)}.ticker-track{display:inline-flex;align-items:center;height:52px;min-width:100%;padding-left:100%;white-space:nowrap;color:var(--text);font-size:23px;font-weight:800;animation:none;will-change:transform}.ticker.ticker-cta .ticker-track{color:var(--purple)}@keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-100%)}}.guides .left-rail,.guides .video-zone,.guides .scorebug,.guides .ticker{outline:2px solid rgba(202,255,61,.75)}.guides .safe-label{opacity:1}`;
 
-const OVERLAY_JS = `const params=new URLSearchParams(window.location.search);const config={source:params.get("source")||"/api/match/flashscore?id=${DEFAULT_MATCH_ID}",news:params.get("news")||"/api/news/tennis",panel:params.get("panel")||"stats",poll:Number(params.get("poll")||3000),guides:params.get("guides")==="1"};const refs={overlay:document.querySelector("#overlay"),matchTitle:document.querySelector("#matchTitle"),matchStage:document.querySelector("#matchStage"),tournament:document.querySelector("#tournament"),statsPanel:document.querySelector("#statsPanel"),chatPanel:document.querySelector("#chatPanel"),statsList:document.querySelector("#statsList"),statUpdated:document.querySelector("#statUpdated"),playerHome:document.querySelector("#playerHome"),playerAway:document.querySelector("#playerAway"),homeName:document.querySelector("#playerHome .player-name"),awayName:document.querySelector("#playerAway .player-name"),homeGames:document.querySelector("#homeGames"),awayGames:document.querySelector("#awayGames"),homePoint:document.querySelector("#homePoint"),awayPoint:document.querySelector("#awayPoint"),tickerTrack:document.querySelector("#tickerTrack")};function asText(value,fallback=""){return value===null||value===undefined||value===""?fallback:String(value)}function setPanelMode(){refs.statsPanel.hidden=config.panel==="chat";refs.chatPanel.hidden=config.panel!=="chat"}function setGuides(){refs.overlay.classList.toggle("guides",config.guides)}async function fetchJson(url){const response=await fetch(url,{cache:"no-store"});if(!response.ok)throw new Error(response.status+" "+response.statusText);return response.json()}function statRows(sections){const wanted=["Service","Return","Points","Games"];return sections.filter(section=>wanted.includes(section.section)).slice(0,4).map(section=>{const rows=section.rows.slice(0,section.section==="Points"?4:3).map(row=>'<div class="stat-row"><span>'+asText(row.home,"-")+'</span><span>'+row.label+'</span><span>'+asText(row.away,"-")+"</span></div>").join("");return '<div class="stat-section"><div class="stat-section-title">'+section.section+"</div>"+rows+"</div>"}).join("")}function renderMatch(data){const home=data.players?.find(player=>player.side==="home")||data.players?.[0]||{};const away=data.players?.find(player=>player.side==="away")||data.players?.[1]||{};refs.matchTitle.textContent=data.match?.title||asText(home.name,"Home")+" - "+asText(away.name,"Away");refs.matchStage.textContent=[data.match?.stage,data.match?.duration].filter(Boolean).join(" · ");refs.tournament.textContent=data.match?.tournament||data.match?.stage||"Live tennis";refs.homeName.textContent=asText(home.shortName||home.name,"Home");refs.awayName.textContent=asText(away.shortName||away.name,"Away");refs.homeGames.textContent=asText(data.score?.games?.home,"0");refs.awayGames.textContent=asText(data.score?.games?.away,"0");refs.homePoint.textContent=asText(data.score?.current?.home,"");refs.awayPoint.textContent=asText(data.score?.current?.away,"");refs.playerHome.classList.toggle("serving",Boolean(home.isServing));refs.playerAway.classList.toggle("serving",Boolean(away.isServing));refs.statsList.innerHTML=statRows(data.statistics||[])||'<div class="chat-line muted">Статистика пока недоступна.</div>';refs.statUpdated.textContent=new Date(data.generatedAt||Date.now()).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}function renderNews(items){const list=Array.isArray(items)?items:items.items||[];refs.tickerTrack.textContent=list.map(item=>item.title||item).filter(Boolean).join("   •   ")}async function refreshMatch(){try{renderMatch(await fetchJson(config.source))}catch(error){refs.matchStage.textContent="Ошибка данных: "+error.message}}async function refreshNews(){try{renderNews(await fetchJson(config.news))}catch(_error){refs.tickerTrack.textContent="Новости временно недоступны"}}setPanelMode();setGuides();refreshMatch();refreshNews();setInterval(refreshMatch,Math.max(config.poll,1000));setInterval(refreshNews,60000);`;
+const OVERLAY_JS = `
+const params = new URLSearchParams(window.location.search);
+const TICKER_CTA = "СМОТРИТЕ ТРАНСЛЯЦИЮ ПО ССЫЛКЕ В ОПИСАНИИ   |   T.ME/TENNIS_BOLSHE";
+const TICKER_SPEEDS = { slow: 26, normal: 36, fast: 52 };
+const config = {
+  source: params.get("source") || "/api/match/flashscore?id=${DEFAULT_MATCH_ID}",
+  news: params.get("news") || "/api/news/tennis",
+  panel: params.get("panel") || "stats",
+  ticker: params.get("ticker") || params.get("tickerSpeed") || "slow",
+  poll: Number(params.get("poll") || 3000),
+  guides: params.get("guides") === "1"
+};
+const refs = {
+  overlay: document.querySelector("#overlay"),
+  matchTitle: document.querySelector("#matchTitle"),
+  matchStage: document.querySelector("#matchStage"),
+  tournament: document.querySelector("#tournament"),
+  statsPanel: document.querySelector("#statsPanel"),
+  chatPanel: document.querySelector("#chatPanel"),
+  statsList: document.querySelector("#statsList"),
+  statUpdated: document.querySelector("#statUpdated"),
+  playerHome: document.querySelector("#playerHome"),
+  playerAway: document.querySelector("#playerAway"),
+  homeName: document.querySelector("#playerHome .player-name"),
+  awayName: document.querySelector("#playerAway .player-name"),
+  homeGames: document.querySelector("#homeGames"),
+  awayGames: document.querySelector("#awayGames"),
+  homePoint: document.querySelector("#homePoint"),
+  awayPoint: document.querySelector("#awayPoint"),
+  ticker: document.querySelector(".ticker"),
+  tickerTrack: document.querySelector("#tickerTrack")
+};
+let newsTickerText = "Загружаем новости...";
+let tickerMode = "news";
+let tickerStarted = false;
+
+function asText(value, fallback = "") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
+function setPanelMode() {
+  refs.statsPanel.hidden = config.panel === "chat";
+  refs.chatPanel.hidden = config.panel !== "chat";
+}
+
+function setGuides() {
+  refs.overlay.classList.toggle("guides", config.guides);
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(response.status + " " + response.statusText);
+  return response.json();
+}
+
+function statRows(sections) {
+  const wanted = ["Service", "Return", "Points", "Games"];
+  return sections
+    .filter((section) => wanted.includes(section.section))
+    .slice(0, 4)
+    .map((section) => {
+      const rows = section.rows
+        .slice(0, section.section === "Points" ? 4 : 3)
+        .map((row) => '<div class="stat-row"><span>' + asText(row.home, "-") + "</span><span>" + row.label + "</span><span>" + asText(row.away, "-") + "</span></div>")
+        .join("");
+      return '<div class="stat-section"><div class="stat-section-title">' + section.section + "</div>" + rows + "</div>";
+    })
+    .join("");
+}
+
+function renderMatch(data) {
+  const home = data.players?.find((player) => player.side === "home") || data.players?.[0] || {};
+  const away = data.players?.find((player) => player.side === "away") || data.players?.[1] || {};
+  refs.matchTitle.textContent = data.match?.title || asText(home.name, "Home") + " - " + asText(away.name, "Away");
+  refs.matchStage.textContent = [data.match?.stage, data.match?.duration].filter(Boolean).join(" · ");
+  refs.tournament.textContent = data.match?.tournament || data.match?.stage || "Live tennis";
+  refs.homeName.textContent = asText(home.shortName || home.name, "Home");
+  refs.awayName.textContent = asText(away.shortName || away.name, "Away");
+  refs.homeGames.textContent = asText(data.score?.games?.home, "0");
+  refs.awayGames.textContent = asText(data.score?.games?.away, "0");
+  refs.homePoint.textContent = asText(data.score?.current?.home, "");
+  refs.awayPoint.textContent = asText(data.score?.current?.away, "");
+  refs.playerHome.classList.toggle("serving", Boolean(home.isServing));
+  refs.playerAway.classList.toggle("serving", Boolean(away.isServing));
+  refs.statsList.innerHTML = statRows(data.statistics || []) || '<div class="chat-line muted">Статистика пока недоступна.</div>';
+  refs.statUpdated.textContent = new Date(data.generatedAt || Date.now()).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function tickerSpeed() {
+  const configured = TICKER_SPEEDS[config.ticker];
+  if (Number.isFinite(configured)) return configured;
+  const numeric = Number(config.ticker);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.min(Math.max(numeric, 12), 90) : TICKER_SPEEDS.slow;
+}
+
+function tickerText() {
+  return tickerMode === "cta" ? TICKER_CTA : newsTickerText;
+}
+
+function restartTicker() {
+  refs.ticker.classList.toggle("ticker-cta", tickerMode === "cta");
+  refs.tickerTrack.style.animation = "none";
+  refs.tickerTrack.textContent = tickerText();
+  const distance = refs.tickerTrack.scrollWidth || document.documentElement.clientWidth || 1920;
+  const duration = Math.max(24, Math.round(distance / tickerSpeed()));
+  refs.tickerTrack.style.setProperty("--ticker-duration", duration + "s");
+  void refs.tickerTrack.offsetWidth;
+  refs.tickerTrack.style.animation = "ticker var(--ticker-duration) linear infinite";
+}
+
+function ensureTickerStarted() {
+  if (tickerStarted) return;
+  tickerStarted = true;
+  tickerMode = "news";
+  restartTicker();
+}
+
+function renderNews(items) {
+  const list = Array.isArray(items) ? items : items.items || [];
+  newsTickerText = list.map((item) => item.title || item).filter(Boolean).join("   •   ") || "Новости временно недоступны";
+  ensureTickerStarted();
+}
+
+async function refreshMatch() {
+  try {
+    renderMatch(await fetchJson(config.source));
+  } catch (error) {
+    refs.matchStage.textContent = "Ошибка данных: " + error.message;
+  }
+}
+
+async function refreshNews() {
+  try {
+    renderNews(await fetchJson(config.news));
+  } catch (_error) {
+    newsTickerText = "Новости временно недоступны";
+    ensureTickerStarted();
+  }
+}
+
+refs.tickerTrack.addEventListener("animationiteration", () => {
+  tickerMode = tickerMode === "news" ? "cta" : "news";
+  restartTicker();
+});
+window.addEventListener("resize", () => {
+  if (tickerStarted) restartTicker();
+});
+
+setPanelMode();
+setGuides();
+refreshMatch();
+refreshNews();
+setInterval(refreshMatch, Math.max(config.poll, 1000));
+setInterval(refreshNews, 60000);
+`;
