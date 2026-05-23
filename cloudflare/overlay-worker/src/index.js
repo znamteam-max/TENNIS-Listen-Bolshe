@@ -53,6 +53,13 @@ export default {
         return json(fallbackNews(error), 200, { "cache-control": "public, max-age=30" });
       }
     }
+    if (url.pathname === "/api/odds/winline") {
+      try {
+        return json(await winlineOdds(url, env), 200, { "cache-control": "public, max-age=60" });
+      } catch (error) {
+        return json({ ok: false, provider: "winline", error: error?.message || String(error), odds: { home: null, away: null } }, 200, { "cache-control": "public, max-age=30" });
+      }
+    }
     if (url.pathname === "/api/matches") return json(matches(url.origin));
     if (url.pathname === "/api/live-matches") {
       try {
@@ -88,6 +95,7 @@ export default {
         "/api/matches",
         "/api/live-matches",
         "/api/news/tennis",
+        "/api/odds/winline",
         "/api/match/flashscore?id=Sril3X2m",
         TELEGRAM_WEBHOOK_PATH
       ]
@@ -120,6 +128,100 @@ function fallbackNews(error) {
       { title: "Тикер обновится автоматически после восстановления источника" }
     ]
   };
+}
+
+async function winlineOdds(url, env) {
+  const home = url.searchParams.get("home") || "";
+  const away = url.searchParams.get("away") || "";
+  const manualHome = url.searchParams.get("homeOdd") || url.searchParams.get("home");
+  const manualAway = url.searchParams.get("awayOdd") || url.searchParams.get("away");
+
+  if (url.searchParams.has("homeOdd") || url.searchParams.has("awayOdd")) {
+    return {
+      ok: true,
+      provider: "winline",
+      source: "query",
+      updatedAt: new Date().toISOString(),
+      odds: { home: cleanOdd(manualHome), away: cleanOdd(manualAway) }
+    };
+  }
+
+  const sourceUrl = String(env.WINLINE_ODDS_URL || "").trim();
+  if (!sourceUrl) {
+    return {
+      ok: true,
+      provider: "winline",
+      source: "not-configured",
+      updatedAt: new Date().toISOString(),
+      odds: { home: null, away: null },
+      players: { home, away }
+    };
+  }
+
+  const response = await fetch(sourceUrl, {
+    headers: {
+      accept: "application/json,text/plain,*/*",
+      "user-agent": "Mozilla/5.0 (compatible; tennis-listen-bolshe-overlay/1.0)"
+    },
+    cf: { cacheTtl: 60, cacheEverything: true }
+  });
+  if (!response.ok) throw new Error(`Winline odds ${response.status}`);
+
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("json") ? await response.json() : await response.text();
+  const odds = extractWinlineOdds(payload, home, away);
+  return {
+    ok: true,
+    provider: "winline",
+    source: sourceUrl,
+    updatedAt: new Date().toISOString(),
+    odds,
+    players: { home, away }
+  };
+}
+
+function extractWinlineOdds(payload, home, away) {
+  if (typeof payload === "string") {
+    const firstTwo = payload.match(/\b\d+[.,]\d+\b/g)?.slice(0, 2) || [];
+    return { home: cleanOdd(firstTwo[0]), away: cleanOdd(firstTwo[1]) };
+  }
+
+  const direct = payload?.odds || payload?.winline || payload;
+  const directHome = direct?.home ?? direct?.homeOdd ?? direct?.p1 ?? direct?.player1 ?? direct?.first;
+  const directAway = direct?.away ?? direct?.awayOdd ?? direct?.p2 ?? direct?.player2 ?? direct?.second;
+  if (directHome || directAway) return { home: cleanOdd(directHome), away: cleanOdd(directAway) };
+
+  const wantedHome = normalizeName(home);
+  const wantedAway = normalizeName(away);
+  const stack = [payload];
+  while (stack.length) {
+    const item = stack.pop();
+    if (!item || typeof item !== "object") continue;
+    if (Array.isArray(item)) {
+      stack.push(...item);
+      continue;
+    }
+
+    const text = normalizeName([item.home, item.away, item.player1, item.player2, item.name, item.title, item.eventName].filter(Boolean).join(" "));
+    if (text && (!wantedHome || text.includes(wantedHome.split(" ").at(-1))) && (!wantedAway || text.includes(wantedAway.split(" ").at(-1)))) {
+      const homeOdd = item.homeOdd ?? item.homeOdds ?? item.odd1 ?? item.p1 ?? item.win1 ?? item.k1;
+      const awayOdd = item.awayOdd ?? item.awayOdds ?? item.odd2 ?? item.p2 ?? item.win2 ?? item.k2;
+      if (homeOdd || awayOdd) return { home: cleanOdd(homeOdd), away: cleanOdd(awayOdd) };
+    }
+    stack.push(...Object.values(item).filter((value) => value && typeof value === "object"));
+  }
+
+  return { home: null, away: null };
+}
+
+function cleanOdd(value) {
+  const textValue = String(value ?? "").replace(",", ".").trim();
+  if (!/^\d+(\.\d+)?$/.test(textValue)) return null;
+  return Number(textValue).toFixed(2);
+}
+
+function normalizeName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
 }
 
 async function sportsTennisNews(env) {
@@ -623,8 +725,10 @@ function overlayPageUrl(origin, match, mode, speed = "slow") {
   const sourceQuery = new URLSearchParams({ url: match.url }).toString();
   const source = encodeURIComponent(`/api/match/flashscore?${sourceQuery}`);
   const newsSource = encodeURIComponent("/api/news/tennis");
+  const oddsQuery = new URLSearchParams({ home: match.home?.name || "", away: match.away?.name || "" }).toString();
+  const oddsSource = encodeURIComponent(`/api/odds/winline?${oddsQuery}`);
   const tickerSpeed = TICKER_SPEEDS[speed] ? speed : "slow";
-  return `${origin}/overlay.html?source=${source}&news=${newsSource}&panel=${mode}&ticker=${tickerSpeed}&poll=3000`;
+  return `${origin}/overlay.html?source=${source}&news=${newsSource}&odds=${oddsSource}&panel=${mode}&ticker=${tickerSpeed}&poll=3000`;
 }
 
 function programSteps(program) {
@@ -675,9 +779,11 @@ async function flashscoreMatch(url, env) {
   const summary = parseSummary(parseFeed(summaryText));
   const history = parseHistory(parseFeed(historyText));
   const players = parsePlayers(page);
-  const serving = history.currentGame?.server || "";
+  const serving = inferServingSide(history);
   const stages = { ...STAGES, ...(safeJson(extractObject(page, '"eventStageTranslations":')) || {}) };
   const title = meta(page, "og:title") || players.map((player) => player.name).join(" - ");
+  const stage = stages[value(common, "DB")] || summary.label || "Live";
+  const sets = buildSetScores(history, { ...summary, label: stage }, common);
 
   return {
     schemaVersion: "1.0",
@@ -689,7 +795,7 @@ async function flashscoreMatch(url, env) {
       title,
       tournament: meta(page, "og:description"),
       status: value(common, "DL") === "3" ? "live" : "unknown",
-      stage: stages[value(common, "DB")] || summary.label || "Live",
+      stage,
       duration: summary.duration,
       startedAtUnix: value(common, "DC"),
       updatedAtUnix: value(common, "DD")
@@ -698,7 +804,7 @@ async function flashscoreMatch(url, env) {
     score: {
       current: { home: value(common, "DP"), away: value(common, "DQ") },
       games: { home: value(common, "DN", summary.homeGames), away: value(common, "DO", summary.awayGames) },
-      sets: [{ label: summary.label || "Current set", homeGames: value(common, "DN", summary.homeGames), awayGames: value(common, "DO", summary.awayGames), winner: "" }]
+      sets
     },
     statistics: parseStats(parseFeed(statsText)),
     matchHistory: history.games,
@@ -758,6 +864,58 @@ function parseSummary(records) {
     awayGames: value(row, "IH"),
     duration: value(row, "RC", records.find((record) => record.RB)?.RB || "")
   };
+}
+
+function buildSetScores(history, summary, common) {
+  const setsByLabel = new Map();
+  for (const game of history.games || []) {
+    const label = game.set || "Set 1";
+    setsByLabel.set(label, {
+      label,
+      number: setNumber(label, setsByLabel.size + 1),
+      homeGames: game.homeGames,
+      awayGames: game.awayGames,
+      winner: game.winner || ""
+    });
+  }
+
+  const currentLabel = summary.label || [...setsByLabel.keys()].at(-1) || "Set 1";
+  const currentNumber = setNumber(currentLabel, setsByLabel.size || 1);
+  const current = {
+    label: currentLabel,
+    number: currentNumber,
+    homeGames: value(common, "DN", summary.homeGames),
+    awayGames: value(common, "DO", summary.awayGames),
+    winner: ""
+  };
+
+  if (current.homeGames !== "" || current.awayGames !== "") {
+    setsByLabel.set(currentLabel, { ...(setsByLabel.get(currentLabel) || {}), ...current });
+  }
+
+  return [...setsByLabel.values()]
+    .sort((a, b) => Number(a.number || 0) - Number(b.number || 0))
+    .slice(0, 5)
+    .map((set, index) => ({
+      label: set.label || `Set ${index + 1}`,
+      number: set.number || index + 1,
+      homeGames: set.homeGames ?? "",
+      awayGames: set.awayGames ?? "",
+      winner: set.winner || "",
+      tieBreak: String(set.homeGames) === "6" && String(set.awayGames) === "6"
+    }));
+}
+
+function setNumber(label, fallback) {
+  const number = String(label || "").match(/\d+/)?.[0];
+  return number ? Number(number) : fallback;
+}
+
+function inferServingSide(history) {
+  if (history.currentGame?.server) return history.currentGame.server;
+  const lastGame = [...(history.games || [])].reverse().find((game) => game.server);
+  if (!lastGame) return "";
+  return lastGame.server === "home" ? "away" : "home";
 }
 
 function parseHistory(records) {
@@ -909,124 +1067,236 @@ const OVERLAY_HTML = `<!doctype html>
 </head>
 <body>
 <main id="overlay" class="overlay">
-  <aside class="left-rail">
-    <section class="promo-block">
-      <div class="promo-kicker">LIVE TENNIS</div>
-      <div id="matchTitle" class="promo-title">Loading match</div>
-      <div id="matchStage" class="promo-meta">Connecting data</div>
-    </section>
-    <section id="statsPanel" class="stats-panel">
-      <div class="panel-head"><span>Статистика</span><span id="statUpdated">--:--</span></div>
-      <div id="statsList" class="stats-list"></div>
-    </section>
-    <section id="chatPanel" class="chat-panel" hidden>
-      <div class="panel-head"><span>Чат</span><span>LIVE</span></div>
-      <div class="chat-line">Комментатор подключен.</div>
-      <div class="chat-line">Оверлей готов к эфиру.</div>
-      <div class="chat-line muted">Здесь можно вывести чат трансляции.</div>
-    </section>
-    <section class="brand-block"><span>БОЛЬШЕ!</span><small>TENNIS STREAM</small></section>
-  </aside>
-  <section class="video-zone"><div class="safe-label">VIDEO / COMMENTATOR AREA</div></section>
-  <section class="scorebug">
-    <div id="tournament" class="scorebug-tournament">Tournament</div>
-    <div id="playerHome" class="player-row"><span class="serve-dot"></span><span class="player-name">Home</span><span id="homeGames" class="score-cell">0</span><span id="homePoint" class="point-cell">0</span></div>
-    <div id="playerAway" class="player-row"><span class="serve-dot"></span><span class="player-name">Away</span><span id="awayGames" class="score-cell">0</span><span id="awayPoint" class="point-cell">0</span></div>
+  <section class="left-panel" aria-label="Статистика матча">
+    <div class="promo-art">
+      <div class="promo-title-main">ВСЕ ДОРОГИ ВЕДУТ В ПАРИЖ</div>
+      <div class="promo-pill">РОЛАН ГАРРОС-2026 НА <b>БОЛЬШЕ!</b></div>
+    </div>
+    <div class="stats-title">СТАТИСТИКА МАТЧА</div>
+    <div class="stats-head">
+      <div id="statHomeCode" class="team-code">---</div>
+      <div id="statAwayCode" class="team-code">---</div>
+    </div>
+    <div id="statsGrid" class="stats-grid"></div>
+    <div id="statTime" class="stats-time">ВРЕМЯ МАТЧА --:--</div>
+    <div class="odds-panel">
+      <div class="odds-title">КОЭФФИЦИЕНТЫ WINLINE</div>
+      <div class="odds-values">
+        <div id="homeOdds" class="odds-box">--</div>
+        <div id="awayOdds" class="odds-box">--</div>
+      </div>
+    </div>
   </section>
-  <section class="ticker"><div id="tickerTrack" class="ticker-track">Loading news...</div></section>
+
+  <section class="video-zone" aria-label="Зона видео"></section>
+
+  <section class="score-strip" aria-label="Счет матча">
+    <div id="scoreTournament" class="score-tournament">РОЛАН ГАРРОС | МУЖЧИНЫ ПЕРВЫЙ КРУГ</div>
+    <div id="scoreClock" class="score-clock">СКОРО</div>
+
+    <div id="scoreHome" class="score-row home">
+      <div id="homeCountry" class="country-code">---</div>
+      <div class="serve-slot"><span class="tennis-ball"></span></div>
+      <img id="homePhoto" class="player-photo" alt="">
+      <div id="homeScoreName" class="score-name">ИГРОК 1</div>
+      <div id="homeSet1" class="set-cell"></div>
+      <div id="homeSet2" class="set-cell"></div>
+      <div id="homeSet3" class="set-cell"></div>
+      <div id="homeSet4" class="set-cell"></div>
+      <div id="homeSet5" class="set-cell"></div>
+    </div>
+
+    <div id="scoreAway" class="score-row away">
+      <div id="awayCountry" class="country-code">---</div>
+      <div class="serve-slot"><span class="tennis-ball"></span></div>
+      <img id="awayPhoto" class="player-photo" alt="">
+      <div id="awayScoreName" class="score-name">ИГРОК 2</div>
+      <div id="awaySet1" class="set-cell"></div>
+      <div id="awaySet2" class="set-cell"></div>
+      <div id="awaySet3" class="set-cell"></div>
+      <div id="awaySet4" class="set-cell"></div>
+      <div id="awaySet5" class="set-cell"></div>
+    </div>
+  </section>
+
+  <section class="ticker" aria-label="Новости">
+    <div class="ticker-logo" aria-hidden="true"><span></span></div>
+    <div class="ticker-mask"><div id="tickerTrack" class="ticker-track">Загружаем новости...</div></div>
+  </section>
 </main>
 <script src="/overlay.js"></script>
 </body>
 </html>`;
 
-const OVERLAY_CSS = `:root{--green:#caff3d;--cyan:#18d8c8;--panel:rgba(17,20,25,.88);--line:rgba(255,255,255,.16);--text:#f7f9fc;--muted:#aab3bf;--purple:#4b267c}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;color:var(--text);font-family:Arial,Helvetica,sans-serif}.overlay{position:relative;width:100vw;height:100vh;min-width:1280px;min-height:720px}.left-rail{position:absolute;left:34px;top:34px;bottom:78px;width:360px;display:grid;grid-template-rows:164px minmax(0,1fr) 128px;gap:18px;min-height:0}.promo-block,.stats-panel,.chat-panel,.brand-block,.scorebug{border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 20px 50px rgba(0,0,0,.28);backdrop-filter:blur(8px)}.stats-panel,.chat-panel{min-height:0;overflow:hidden}.promo-block{padding:22px;border-left:6px solid var(--green)}.promo-kicker{color:var(--green);font-size:15px;font-weight:800}.promo-title{margin-top:18px;font-size:28px;line-height:1.05;font-weight:800}.promo-meta{margin-top:10px;color:var(--muted);font-size:15px}.panel-head{display:flex;justify-content:space-between;align-items:center;min-height:44px;padding:0 16px;border-bottom:1px solid var(--line);color:var(--green);font-weight:800;font-size:14px}.stats-list{height:calc(100% - 44px);overflow:hidden;padding:12px 14px}.stat-section{margin-bottom:13px}.stat-section-title{margin-bottom:7px;color:var(--cyan);font-size:13px;font-weight:800}.stat-row{display:grid;grid-template-columns:58px 1fr 58px;align-items:center;min-height:25px;gap:8px;color:var(--text);font-size:13px}.stat-row span:nth-child(2){color:var(--muted);text-align:center}.stat-row span:last-child{text-align:right}.chat-line{margin:14px 16px 0;padding:10px 12px;border-radius:8px;background:rgba(255,255,255,.08);font-size:15px}.chat-line.muted{color:var(--muted)}.brand-block{display:grid;align-content:center;justify-items:start;padding:0 26px;background:linear-gradient(90deg,rgba(255,77,109,.92),rgba(202,255,61,.88));color:#101114}.brand-block span{font-size:40px;font-weight:900}.brand-block small{margin-top:4px;font-weight:800}.video-zone{position:absolute;left:430px;right:34px;top:34px;bottom:78px;border:1px dashed transparent}.safe-label{position:absolute;top:0;right:0;opacity:0;color:rgba(255,255,255,.5);font-size:13px}.scorebug{position:absolute;right:44px;bottom:106px;width:462px;padding:12px}.scorebug-tournament{min-height:24px;margin-bottom:8px;color:var(--green);font-size:13px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.player-row{display:grid;grid-template-columns:18px minmax(0,1fr) 54px 66px;align-items:center;min-height:42px;gap:10px;border-top:1px solid var(--line);font-size:18px;font-weight:800}.serve-dot{width:10px;height:10px;border-radius:50%;background:transparent}.player-row.serving .serve-dot{background:var(--green);box-shadow:0 0 18px var(--green)}.player-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.score-cell,.point-cell{min-height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;background:rgba(255,255,255,.1)}.point-cell{background:var(--green);color:#101114}.ticker{position:absolute;left:0;right:0;bottom:0;height:52px;overflow:hidden;background:#050608;border-top:3px solid var(--green);transition:background .25s ease,border-color .25s ease}.ticker.ticker-cta{background:var(--green);border-top-color:var(--purple)}.ticker-track{display:inline-flex;align-items:center;height:52px;min-width:100%;padding-left:100%;white-space:nowrap;color:var(--text);font-size:23px;font-weight:800;animation:none;will-change:transform}.ticker.ticker-cta .ticker-track{color:var(--purple)}@keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-100%)}}.guides .left-rail,.guides .video-zone,.guides .scorebug,.guides .ticker{outline:2px solid rgba(202,255,61,.75)}.guides .safe-label{opacity:1}`;
+const OVERLAY_CSS = `@import url("https://fonts.googleapis.com/css2?family=Sofia+Sans:ital,wght@0,400..900;1,400..900&family=Sofia+Sans+Condensed:ital,wght@0,400..900;1,400..900&display=swap");:root{--purple:#4b2b86;--lime:#dfff24;--green:#205900;--black:#111117;--line:#a9a9a9;--white:#fff;--blue:#006bff;--scale:1}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;font-family:"Sofia Sans",Arial,sans-serif;color:#111}.overlay{position:relative;width:1920px;height:1080px;overflow:hidden;background:transparent;transform-origin:top left}.left-panel{position:absolute;left:0;top:0;width:540px;height:978px;background:#fff;overflow:hidden}.promo-art{position:absolute;left:0;top:0;width:540px;height:226px;overflow:hidden;background:linear-gradient(180deg,rgba(38,13,10,.1),rgba(38,13,10,.34)),radial-gradient(circle at 52% 62%,#f2d08d 0 8%,#be6b38 20%,#4a211d 56%,#121018 100%)}.promo-art:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.42),transparent 26%,transparent 74%,rgba(0,0,0,.42)),repeating-linear-gradient(90deg,rgba(255,255,255,.14) 0 2px,transparent 2px 46px);mix-blend-mode:screen;opacity:.7}.promo-title-main{position:absolute;left:78px;top:0;width:390px;text-align:center;color:#fff;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:40px;line-height:1;font-weight:900;font-style:italic;text-shadow:0 2px 4px rgba(0,0,0,.45)}.promo-pill{position:absolute;left:164px;top:82px;padding:3px 9px;border-radius:5px;background:#15151a;color:#fff;font-size:13px;line-height:16px;font-weight:900}.promo-pill b{color:var(--lime);font-style:italic}.stats-title{position:absolute;left:0;top:226px;width:540px;height:67px;background:#fff;color:var(--purple);font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:51px;line-height:67px;font-weight:900;font-style:italic;text-align:center}.stats-head{position:absolute;left:0;top:293px;width:540px;height:60px;background:var(--purple);display:grid;grid-template-columns:181px 182px 177px;align-items:center}.team-code{color:#fff;font-size:30px;font-weight:900;text-align:center}.team-code:first-child{grid-column:1}.team-code:last-child{grid-column:3}.stats-grid{position:absolute;left:0;top:353px;width:540px;height:420px;display:grid;grid-template-rows:repeat(7,60px);background:#fff}.stat-row-template{display:grid;grid-template-columns:181px 182px 177px;min-height:60px}.stat-cell{height:60px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--line);font-size:26px;font-weight:800;color:var(--purple);text-align:center;white-space:nowrap}.stat-label{height:60px;display:flex;align-items:center;justify-content:center;padding:0 14px;background:var(--purple);color:#fff;border-bottom:0;font-size:17px;line-height:18px;font-weight:900;text-align:center;text-transform:uppercase}.stats-time{position:absolute;left:181px;top:313px;width:182px;height:20px;color:#fff;background:var(--purple);font-size:12px;font-weight:900;text-align:center;line-height:20px;opacity:.95}.odds-panel{position:absolute;left:0;top:778px;width:540px;height:200px;background:var(--black);border-top:1px solid #24242c}.odds-title{position:absolute;left:62px;top:20px;color:#fff;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:38px;line-height:40px;font-weight:900;font-style:italic}.odds-values{position:absolute;left:56px;right:54px;top:91px;display:flex;justify-content:space-between}.odds-box{width:146px;height:66px;display:flex;align-items:center;justify-content:center;transform:skew(-10deg);background:var(--blue);color:#fff;font-size:34px;font-weight:900;line-height:1}.odds-box::first-letter{transform:skew(10deg)}.video-zone{position:absolute;left:546px;top:0;width:1374px;height:773px;background:var(--green)}.score-strip{position:absolute;left:546px;top:773px;width:1374px;height:205px;background:#fff;overflow:hidden}.score-tournament{position:absolute;left:222px;top:21px;width:700px;height:36px;color:#111;font-size:31px;line-height:36px;font-weight:500;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.score-clock{position:absolute;right:165px;top:19px;width:180px;height:36px;text-align:center;color:#111;font-size:31px;line-height:36px;font-weight:500;white-space:nowrap}.score-row{position:absolute;left:68px;width:1220px;height:60px;display:grid;grid-template-columns:72px 36px 61px 1fr repeat(5,54px);column-gap:12px;align-items:center}.score-row.home{top:71px}.score-row.away{top:134px}.country-code{font-size:31px;font-weight:500;text-align:left;line-height:44px}.serve-slot{width:36px;height:48px;display:flex;align-items:center;justify-content:center}.tennis-ball{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff67a 0 12%,#dfff24 34%,#a5c90b 100%);box-shadow:0 0 12px rgba(212,255,31,.8);opacity:0;position:relative}.tennis-ball:before,.tennis-ball:after{content:"";position:absolute;top:2px;bottom:2px;width:12px;border:2px solid rgba(255,255,255,.9);border-left:0;border-radius:50%;opacity:.9}.tennis-ball:before{left:2px;transform:rotate(24deg)}.tennis-ball:after{right:2px;transform:rotate(204deg)}.score-row.serving .tennis-ball{opacity:1}.player-photo{width:58px;height:58px;border-radius:50%;object-fit:cover;background:var(--lime);border:4px solid var(--lime)}.score-name{min-width:0;color:#000;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:43px;line-height:54px;font-weight:900;font-style:italic;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.set-cell{width:54px;height:48px;display:flex;align-items:center;justify-content:center;color:#111;font-size:34px;font-weight:600;line-height:1}.set-cell.tie-break{width:42px;height:42px;justify-self:center;background:var(--purple);color:#fff;border-radius:2px;font-weight:900}.ticker{position:absolute;left:0;right:0;bottom:0;height:102px;overflow:hidden;background:linear-gradient(112deg,#6b3fad 0%,#513397 34%,#caff22 42%,#6440a4 49%,#43176f 100%)}.ticker:before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(17deg,rgba(255,255,255,.16) 0 1px,transparent 1px 4px);opacity:.45}.ticker-logo{position:absolute;left:31px;top:22px;width:64px;height:64px;border-radius:50%;background:#fff;z-index:3}.ticker-logo span{position:absolute;left:16px;top:11px;width:31px;height:42px;border-radius:4px;overflow:hidden}.ticker-logo span:before{content:"";position:absolute;left:-12px;top:3px;width:38px;height:38px;border:9px solid var(--purple);border-left:0;border-bottom:0;transform:rotate(45deg)}.ticker-mask{position:absolute;left:112px;right:0;top:0;height:102px;overflow:hidden;z-index:2}.ticker-track{position:absolute;left:0;top:0;height:102px;display:inline-flex;align-items:center;white-space:nowrap;color:#fff;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:42px;line-height:102px;font-weight:900;font-style:italic;text-transform:uppercase;text-shadow:0 2px 2px rgba(0,0,0,.18);will-change:transform;animation:none}.guides .left-panel,.guides .video-zone,.guides .score-strip,.guides .ticker{outline:2px solid rgba(202,255,61,.8)}@keyframes ticker{from{transform:translateX(var(--ticker-start,1808px))}to{transform:translateX(-100%)}}`;
 
 const OVERLAY_JS = `
 const params = new URLSearchParams(window.location.search);
-const TICKER_CTA = "СМОТРИТЕ ТРАНСЛЯЦИЮ ПО ССЫЛКЕ В ОПИСАНИИ   |   T.ME/TENNIS_BOLSHE";
+const TICKER_CTA = "смотрите прямую трансляцию на Больше! в ВК, ссылка в описании";
 const TICKER_SPEEDS = { slow: 26, normal: 36, fast: 52 };
+const COUNTRY_CODES = {
+  Argentina: "ARG", Australia: "AUS", Austria: "AUT", Belgium: "BEL", Brazil: "BRA", Bulgaria: "BUL", Canada: "CAN", Chile: "CHI", China: "CHN", Croatia: "CRO", Czechia: "CZE", Denmark: "DEN", France: "FRA", Germany: "GER", Greece: "GRE", Hungary: "HUN", Italy: "ITA", Japan: "JPN", Kazakhstan: "KAZ", Netherlands: "NED", Norway: "NOR", Poland: "POL", Portugal: "POR", Romania: "ROU", Russia: "RUS", Serbia: "SRB", Slovakia: "SVK", Slovenia: "SLO", Spain: "ESP", Sweden: "SWE", Switzerland: "SUI", Ukraine: "UKR", USA: "USA", "United States": "USA", "Great Britain": "GBR"
+};
+const STAT_ROWS = [
+  { label: "ЭЙСЫ", sources: [["Service", "Aces"]] },
+  { label: "ДВОЙНЫЕ\\nОШИБКИ", sources: [["Service", "Double Faults"]] },
+  { label: "% ПЕРВОЙ\\nПОДАЧИ", sources: [["Service", "1st serve percentage"]] },
+  { label: "ОЧКИ НА\\nПЕРВОЙ ПОДАЧЕ", sources: [["Service", "1st serve points won"]] },
+  { label: "ОЧКИ НА\\nВТОРОЙ ПОДАЧЕ", sources: [["Service", "2nd serve points won"]] },
+  { label: "БРЕЙК-ПОИНТЫ", sources: [["Return", "Break Points Converted"], ["Service", "Break Points Saved"]] },
+  { label: "РОЗЫГРЫШИ\\nПОД ДАВЛЕНИЕМ", sources: [["Points", "Last 10 balls"], ["Points", "Total Points Won"]] }
+];
 const config = {
   source: params.get("source") || "/api/match/flashscore?id=${DEFAULT_MATCH_ID}",
   news: params.get("news") || "/api/news/tennis",
-  panel: params.get("panel") || "stats",
+  odds: params.get("odds") || "",
   ticker: params.get("ticker") || params.get("tickerSpeed") || "slow",
   poll: Number(params.get("poll") || 3000),
   guides: params.get("guides") === "1"
 };
 const refs = {
   overlay: document.querySelector("#overlay"),
-  matchTitle: document.querySelector("#matchTitle"),
-  matchStage: document.querySelector("#matchStage"),
-  tournament: document.querySelector("#tournament"),
-  statsPanel: document.querySelector("#statsPanel"),
-  chatPanel: document.querySelector("#chatPanel"),
-  statsList: document.querySelector("#statsList"),
-  statUpdated: document.querySelector("#statUpdated"),
-  playerHome: document.querySelector("#playerHome"),
-  playerAway: document.querySelector("#playerAway"),
-  homeName: document.querySelector("#playerHome .player-name"),
-  awayName: document.querySelector("#playerAway .player-name"),
-  homeGames: document.querySelector("#homeGames"),
-  awayGames: document.querySelector("#awayGames"),
-  homePoint: document.querySelector("#homePoint"),
-  awayPoint: document.querySelector("#awayPoint"),
-  ticker: document.querySelector(".ticker"),
+  statsGrid: document.querySelector("#statsGrid"),
+  statHomeCode: document.querySelector("#statHomeCode"),
+  statAwayCode: document.querySelector("#statAwayCode"),
+  statTime: document.querySelector("#statTime"),
+  scoreTournament: document.querySelector("#scoreTournament"),
+  scoreClock: document.querySelector("#scoreClock"),
+  scoreHome: document.querySelector("#scoreHome"),
+  scoreAway: document.querySelector("#scoreAway"),
+  homeCountry: document.querySelector("#homeCountry"),
+  awayCountry: document.querySelector("#awayCountry"),
+  homePhoto: document.querySelector("#homePhoto"),
+  awayPhoto: document.querySelector("#awayPhoto"),
+  homeScoreName: document.querySelector("#homeScoreName"),
+  awayScoreName: document.querySelector("#awayScoreName"),
+  homeOdds: document.querySelector("#homeOdds"),
+  awayOdds: document.querySelector("#awayOdds"),
+  tickerMask: document.querySelector(".ticker-mask"),
   tickerTrack: document.querySelector("#tickerTrack")
 };
+let lastMatchData = null;
 let newsTickerText = "Загружаем новости...";
 let tickerMode = "news";
 let tickerStarted = false;
 
-function asText(value, fallback = "") {
+function asText(value, fallback) {
   return value === null || value === undefined || value === "" ? fallback : String(value);
 }
 
-function setPanelMode() {
-  refs.statsPanel.hidden = config.panel === "chat";
-  refs.chatPanel.hidden = config.panel !== "chat";
+function fetchJson(url) {
+  return fetch(url, { cache: "no-store" }).then(function(response) {
+    if (!response.ok) throw new Error(response.status + " " + response.statusText);
+    return response.json();
+  });
 }
 
-function setGuides() {
-  refs.overlay.classList.toggle("guides", config.guides);
+function statHtml() {
+  return STAT_ROWS.map(function(row) {
+    return '<div class="stat-row-template"><div class="stat-cell" data-stat-home="' + row.label.replace(/\\n/g, " ") + '"></div><div class="stat-label">' + row.label.replace(/\\n/g, "<br>") + '</div><div class="stat-cell" data-stat-away="' + row.label.replace(/\\n/g, " ") + '"></div></div>';
+  }).join("");
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(response.status + " " + response.statusText);
-  return response.json();
+function codeFromName(name) {
+  const cleaned = String(name || "").replace(/\\([^)]*\\)/g, "").trim();
+  const last = cleaned.split(/\\s+/).filter(Boolean).pop() || cleaned;
+  return last.slice(0, 3).toUpperCase();
 }
 
-function statRows(sections) {
-  const wanted = ["Service", "Return", "Points", "Games"];
-  return sections
-    .filter((section) => wanted.includes(section.section))
-    .slice(0, 4)
-    .map((section) => {
-      const rows = section.rows
-        .slice(0, section.section === "Points" ? 4 : 3)
-        .map((row) => '<div class="stat-row"><span>' + asText(row.home, "-") + "</span><span>" + row.label + "</span><span>" + asText(row.away, "-") + "</span></div>")
-        .join("");
-      return '<div class="stat-section"><div class="stat-section-title">' + section.section + "</div>" + rows + "</div>";
-    })
-    .join("");
+function countryCode(country) {
+  return COUNTRY_CODES[country] || String(country || "---").slice(0, 3).toUpperCase();
+}
+
+function surname(name) {
+  const parts = String(name || "").trim().split(/\\s+/).filter(Boolean);
+  return (parts.pop() || name || "ИГРОК").toUpperCase();
+}
+
+function normalize(value) {
+  return String(value || "").toLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
+}
+
+function findStat(stats, sources) {
+  for (const source of sources) {
+    const wantedSection = normalize(source[0]);
+    const wantedLabel = normalize(source[1]);
+    const section = (stats || []).find(function(item) { return normalize(item.section) === wantedSection; });
+    const row = section?.rows?.find(function(item) { return normalize(item.label) === wantedLabel; });
+    if (row) return row;
+  }
+  return { home: "", away: "" };
+}
+
+function fillStats(stats) {
+  STAT_ROWS.forEach(function(row, index) {
+    const stat = findStat(stats, row.sources);
+    const host = refs.statsGrid.children[index];
+    if (!host) return;
+    host.children[0].textContent = asText(stat.home, "");
+    host.children[2].textContent = asText(stat.away, "");
+  });
+}
+
+function formatTournament(match) {
+  const raw = String(match?.tournament || match?.stage || "Live tennis");
+  const afterColon = raw.includes(":") ? raw.split(":").slice(1).join(":") : raw;
+  const city = afterColon.split("(")[0].split("-")[0].replace(/,/g, "").trim() || "ТЕННИС";
+  const gender = /WTA|WOMEN|ЖЕН/i.test(raw) ? "ЖЕНЩИНЫ" : "МУЖЧИНЫ";
+  const stageRaw = afterColon.split("-").pop()?.trim() || match?.stage || "";
+  const stage = translateStage(stageRaw);
+  return (city + " | " + gender + (stage ? " " + stage : "")).toUpperCase();
+}
+
+function translateStage(stage) {
+  const value = String(stage || "").toLowerCase();
+  if (value.includes("final")) return "ФИНАЛ";
+  if (value.includes("semi")) return "ПОЛУФИНАЛ";
+  if (value.includes("quarter")) return "ЧЕТВЕРТЬФИНАЛ";
+  if (value.includes("round") || value.includes("1/")) return "ПЕРВЫЙ КРУГ";
+  return String(stage || "").replace(/set \\d+/i, "").trim().toUpperCase();
+}
+
+function renderSets(data) {
+  const sets = data.score?.sets || [];
+  for (let i = 0; i < 5; i++) {
+    const set = sets[i] || {};
+    const home = document.querySelector("#homeSet" + (i + 1));
+    const away = document.querySelector("#awaySet" + (i + 1));
+    home.textContent = asText(set.homeGames, "");
+    away.textContent = asText(set.awayGames, "");
+    const tieBreak = Boolean(set.tieBreak) || (String(set.homeGames) === "6" && String(set.awayGames) === "6");
+    home.classList.toggle("tie-break", tieBreak);
+    away.classList.toggle("tie-break", tieBreak);
+  }
+}
+
+function renderPlayer(side, player) {
+  const home = side === "home";
+  const row = home ? refs.scoreHome : refs.scoreAway;
+  const photo = home ? refs.homePhoto : refs.awayPhoto;
+  const country = home ? refs.homeCountry : refs.awayCountry;
+  const scoreName = home ? refs.homeScoreName : refs.awayScoreName;
+  country.textContent = countryCode(player.country);
+  scoreName.textContent = surname(player.name || player.shortName);
+  photo.src = player.image || "";
+  photo.alt = player.name || "";
+  row.classList.toggle("serving", Boolean(player.isServing));
 }
 
 function renderMatch(data) {
-  const home = data.players?.find((player) => player.side === "home") || data.players?.[0] || {};
-  const away = data.players?.find((player) => player.side === "away") || data.players?.[1] || {};
-  refs.matchTitle.textContent = data.match?.title || asText(home.name, "Home") + " - " + asText(away.name, "Away");
-  refs.matchStage.textContent = [data.match?.stage, data.match?.duration].filter(Boolean).join(" · ");
-  refs.tournament.textContent = data.match?.tournament || data.match?.stage || "Live tennis";
-  refs.homeName.textContent = asText(home.shortName || home.name, "Home");
-  refs.awayName.textContent = asText(away.shortName || away.name, "Away");
-  refs.homeGames.textContent = asText(data.score?.games?.home, "0");
-  refs.awayGames.textContent = asText(data.score?.games?.away, "0");
-  refs.homePoint.textContent = asText(data.score?.current?.home, "");
-  refs.awayPoint.textContent = asText(data.score?.current?.away, "");
-  refs.playerHome.classList.toggle("serving", Boolean(home.isServing));
-  refs.playerAway.classList.toggle("serving", Boolean(away.isServing));
-  refs.statsList.innerHTML = statRows(data.statistics || []) || '<div class="chat-line muted">Статистика пока недоступна.</div>';
-  refs.statUpdated.textContent = new Date(data.generatedAt || Date.now()).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  lastMatchData = data;
+  const home = data.players?.find(function(player) { return player.side === "home"; }) || data.players?.[0] || {};
+  const away = data.players?.find(function(player) { return player.side === "away"; }) || data.players?.[1] || {};
+  refs.statHomeCode.textContent = codeFromName(home.name || home.shortName);
+  refs.statAwayCode.textContent = codeFromName(away.name || away.shortName);
+  refs.scoreTournament.textContent = formatTournament(data.match);
+  const duration = data.match?.duration || "";
+  refs.scoreClock.textContent = data.match?.status === "live" && duration ? duration : "СКОРО";
+  refs.statTime.textContent = duration ? "ВРЕМЯ МАТЧА " + duration : "ВРЕМЯ МАТЧА --:--";
+  renderPlayer("home", home);
+  renderPlayer("away", away);
+  renderSets(data);
+  fillStats(data.statistics || []);
 }
 
 function tickerSpeed() {
@@ -1041,14 +1311,15 @@ function tickerText() {
 }
 
 function restartTicker() {
-  refs.ticker.classList.toggle("ticker-cta", tickerMode === "cta");
   refs.tickerTrack.style.animation = "none";
   refs.tickerTrack.textContent = tickerText();
-  const distance = refs.tickerTrack.scrollWidth || document.documentElement.clientWidth || 1920;
-  const duration = Math.max(24, Math.round(distance / tickerSpeed()));
+  const maskWidth = refs.tickerMask.clientWidth || 1808;
+  refs.tickerTrack.style.setProperty("--ticker-start", maskWidth + "px");
+  const distance = maskWidth + (refs.tickerTrack.scrollWidth || 1200);
+  const duration = Math.max(26, Math.round(distance / tickerSpeed()));
   refs.tickerTrack.style.setProperty("--ticker-duration", duration + "s");
   void refs.tickerTrack.offsetWidth;
-  refs.tickerTrack.style.animation = "ticker var(--ticker-duration) linear infinite";
+  refs.tickerTrack.style.animation = "ticker var(--ticker-duration) linear 1";
 }
 
 function ensureTickerStarted() {
@@ -1058,17 +1329,30 @@ function ensureTickerStarted() {
   restartTicker();
 }
 
-function renderNews(items) {
-  const list = Array.isArray(items) ? items : items.items || [];
-  newsTickerText = list.map((item) => item.title || item).filter(Boolean).join("   •   ") || "Новости временно недоступны";
+function renderNews(payload) {
+  const list = Array.isArray(payload) ? payload : payload.items || [];
+  newsTickerText = list.map(function(item) { return item.title || item; }).filter(Boolean).join("   •   ") || "Новости временно недоступны";
+  if (tickerMode === "news") restartTicker();
   ensureTickerStarted();
+}
+
+function oddsUrl() {
+  if (config.odds) return config.odds;
+  const home = lastMatchData?.players?.find(function(player) { return player.side === "home"; })?.name || "";
+  const away = lastMatchData?.players?.find(function(player) { return player.side === "away"; })?.name || "";
+  return "/api/odds/winline?home=" + encodeURIComponent(home) + "&away=" + encodeURIComponent(away);
+}
+
+function renderOdds(payload) {
+  refs.homeOdds.textContent = payload?.odds?.home || "--";
+  refs.awayOdds.textContent = payload?.odds?.away || "--";
 }
 
 async function refreshMatch() {
   try {
     renderMatch(await fetchJson(config.source));
   } catch (error) {
-    refs.matchStage.textContent = "Ошибка данных: " + error.message;
+    refs.statTime.textContent = "ОШИБКА ДАННЫХ";
   }
 }
 
@@ -1077,22 +1361,32 @@ async function refreshNews() {
     renderNews(await fetchJson(config.news));
   } catch (_error) {
     newsTickerText = "Новости временно недоступны";
+    if (tickerMode === "news") restartTicker();
     ensureTickerStarted();
   }
 }
 
-refs.tickerTrack.addEventListener("animationiteration", () => {
+async function refreshOdds() {
+  try {
+    renderOdds(await fetchJson(oddsUrl()));
+  } catch (_error) {
+    renderOdds({ odds: { home: null, away: null } });
+  }
+}
+
+refs.statsGrid.innerHTML = statHtml();
+refs.overlay.classList.toggle("guides", config.guides);
+refs.tickerTrack.addEventListener("animationend", function() {
   tickerMode = tickerMode === "news" ? "cta" : "news";
   restartTicker();
 });
-window.addEventListener("resize", () => {
+window.addEventListener("resize", function() {
   if (tickerStarted) restartTicker();
 });
 
-setPanelMode();
-setGuides();
-refreshMatch();
+refreshMatch().then(refreshOdds);
 refreshNews();
 setInterval(refreshMatch, Math.max(config.poll, 1000));
 setInterval(refreshNews, 60000);
+setInterval(refreshOdds, 60000);
 `;

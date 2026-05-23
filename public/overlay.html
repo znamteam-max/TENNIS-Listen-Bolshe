@@ -1,68 +1,70 @@
 <!doctype html>
 <html lang="ru">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Tennis Overlay</title>
-    <link rel="stylesheet" href="/overlay.css">
-  </head>
-  <body>
-    <main id="overlay" class="overlay">
-      <aside class="left-rail">
-        <section class="promo-block">
-          <div class="promo-kicker">LIVE TENNIS</div>
-          <div id="matchTitle" class="promo-title">Загрузка матча</div>
-          <div id="matchStage" class="promo-meta">Подключение данных</div>
-        </section>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tennis Overlay</title>
+<link rel="stylesheet" href="/overlay.css">
+</head>
+<body>
+<main id="overlay" class="overlay">
+  <section class="left-panel" aria-label="Статистика матча">
+    <div class="promo-art">
+      <div class="promo-title-main">ВСЕ ДОРОГИ ВЕДУТ В ПАРИЖ</div>
+      <div class="promo-pill">РОЛАН ГАРРОС-2026 НА <b>БОЛЬШЕ!</b></div>
+    </div>
+    <div class="stats-title">СТАТИСТИКА МАТЧА</div>
+    <div class="stats-head">
+      <div id="statHomeCode" class="team-code">---</div>
+      <div id="statAwayCode" class="team-code">---</div>
+    </div>
+    <div id="statsGrid" class="stats-grid"></div>
+    <div id="statTime" class="stats-time">ВРЕМЯ МАТЧА --:--</div>
+    <div class="odds-panel">
+      <div class="odds-title">КОЭФФИЦИЕНТЫ WINLINE</div>
+      <div class="odds-values">
+        <div id="homeOdds" class="odds-box">--</div>
+        <div id="awayOdds" class="odds-box">--</div>
+      </div>
+    </div>
+  </section>
 
-        <section id="statsPanel" class="stats-panel">
-          <div class="panel-head">
-            <span>Статистика</span>
-            <span id="statUpdated">--:--</span>
-          </div>
-          <div id="statsList" class="stats-list"></div>
-        </section>
+  <section class="video-zone" aria-label="Зона видео"></section>
 
-        <section id="chatPanel" class="chat-panel" hidden>
-          <div class="panel-head">
-            <span>Чат</span>
-            <span>LIVE</span>
-          </div>
-          <div class="chat-line">Комментатор подключен.</div>
-          <div class="chat-line">Оверлей готов к эфиру.</div>
-          <div class="chat-line muted">Здесь можно вывести чат трансляции.</div>
-        </section>
+  <section class="score-strip" aria-label="Счет матча">
+    <div id="scoreTournament" class="score-tournament">РОЛАН ГАРРОС | МУЖЧИНЫ ПЕРВЫЙ КРУГ</div>
+    <div id="scoreClock" class="score-clock">СКОРО</div>
 
-        <section class="brand-block">
-          <span>БОЛЬШЕ!</span>
-          <small>TENNIS STREAM</small>
-        </section>
-      </aside>
+    <div id="scoreHome" class="score-row home">
+      <div id="homeCountry" class="country-code">---</div>
+      <div class="serve-slot"><span class="tennis-ball"></span></div>
+      <img id="homePhoto" class="player-photo" alt="">
+      <div id="homeScoreName" class="score-name">ИГРОК 1</div>
+      <div id="homeSet1" class="set-cell"></div>
+      <div id="homeSet2" class="set-cell"></div>
+      <div id="homeSet3" class="set-cell"></div>
+      <div id="homeSet4" class="set-cell"></div>
+      <div id="homeSet5" class="set-cell"></div>
+    </div>
 
-      <section class="video-zone">
-        <div class="safe-label">VIDEO / COMMENTATOR AREA</div>
-      </section>
+    <div id="scoreAway" class="score-row away">
+      <div id="awayCountry" class="country-code">---</div>
+      <div class="serve-slot"><span class="tennis-ball"></span></div>
+      <img id="awayPhoto" class="player-photo" alt="">
+      <div id="awayScoreName" class="score-name">ИГРОК 2</div>
+      <div id="awaySet1" class="set-cell"></div>
+      <div id="awaySet2" class="set-cell"></div>
+      <div id="awaySet3" class="set-cell"></div>
+      <div id="awaySet4" class="set-cell"></div>
+      <div id="awaySet5" class="set-cell"></div>
+    </div>
+  </section>
 
-      <section class="scorebug">
-        <div id="tournament" class="scorebug-tournament">Tournament</div>
-        <div id="playerHome" class="player-row">
-          <span class="serve-dot"></span>
-          <span class="player-name">Home</span>
-          <span id="homeGames" class="score-cell">0</span>
-          <span id="homePoint" class="point-cell">0</span>
-        </div>
-        <div id="playerAway" class="player-row">
-          <span class="serve-dot"></span>
-          <span class="player-name">Away</span>
-          <span id="awayGames" class="score-cell">0</span>
-          <span id="awayPoint" class="point-cell">0</span>
-        </div>
-      </section>
-
-      <section class="ticker">
-        <div id="tickerTrack" class="ticker-track">Загрузка новостей...</div>
-      </section>
-    </main>
-    <script src="/overlay.js"></script>
-  </body>
+  <section class="ticker" aria-label="Новости">
+    <div class="ticker-logo" aria-hidden="true"><span></span></div>
+    <div class="ticker-mask"><div id="tickerTrack" class="ticker-track">Загружаем новости...</div></div>
+  </section>
+</main>
+<script src="/overlay.js"></script>
+</body>
 </html>

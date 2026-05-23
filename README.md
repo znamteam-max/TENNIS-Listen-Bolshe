@@ -8,6 +8,7 @@ Cloudflare Worker для live-теннисного оверлея и отдел�
 - Health: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/health`
 - Live matches API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/live-matches`
 - Live tennis news API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/news/tennis`
+- Winline odds API hook: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/odds/winline`
 - Telegram webhook: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/telegram/webhook`
 
 ## Telegram bot
@@ -36,6 +37,10 @@ https://www.sports.ru/tennis/news/top/
 ```
 
 The overlay ticker refreshes this feed every minute, scrolls at the speed chosen in Telegram, and alternates a full news pass with the "watch the stream by the link in the description" promo line. If Sports.ru is temporarily unavailable, the endpoint returns a small fallback ticker instead of breaking the overlay.
+
+## Winline Odds
+
+The overlay refreshes `/api/odds/winline` once per minute. If `WINLINE_ODDS_URL` is configured on the Worker, the endpoint fetches that JSON/text source and tries to map the active home/away prices. Without a configured source, the odds cells stay visible and show `--`.
 
 ## Local Preview
 
