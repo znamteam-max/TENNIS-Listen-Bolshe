@@ -1,0 +1,120 @@
+@import url("https://fonts.googleapis.com/css2?family=Sofia+Sans:ital,wght@0,400..900;1,400..900&display=swap");
+
+:root {
+  --purple: #4b2b86;
+  --lime: #dfff24;
+  --ticker-height: 102px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Sofia Sans", Arial, sans-serif;
+}
+
+.news-ticker-overlay {
+  position: relative;
+  width: 1920px;
+  height: var(--ticker-height);
+  overflow: hidden;
+  transform-origin: top left;
+  background: transparent;
+}
+
+.ticker {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background:
+    linear-gradient(112deg, #6b3fad 0%, #513397 34%, #caff22 42%, #6440a4 49%, #43176f 100%);
+}
+
+.ticker::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(17deg, rgba(255, 255, 255, 0.16) 0 1px, transparent 1px 4px);
+  opacity: 0.45;
+}
+
+.ticker-logo {
+  position: absolute;
+  left: 31px;
+  top: 19px;
+  z-index: 3;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.ticker-logo span {
+  position: absolute;
+  left: 16px;
+  top: 11px;
+  width: 31px;
+  height: 42px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.ticker-logo span::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 3px;
+  width: 38px;
+  height: 38px;
+  border: 9px solid var(--purple);
+  border-left: 0;
+  border-bottom: 0;
+  transform: rotate(45deg);
+}
+
+.ticker-mask {
+  position: absolute;
+  left: 112px;
+  right: 0;
+  top: 0;
+  z-index: 2;
+  height: var(--ticker-height);
+  overflow: hidden;
+}
+
+.ticker-track {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  height: var(--ticker-height);
+  color: #fff;
+  font-family: "Sofia Sans", Arial, sans-serif;
+  font-size: 42px;
+  font-style: italic;
+  font-weight: 900;
+  line-height: var(--ticker-height);
+  text-shadow: 0 2px 2px rgba(0, 0, 0, 0.18);
+  text-transform: uppercase;
+  white-space: nowrap;
+  will-change: transform;
+  animation: none;
+}
+
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(var(--ticker-start, 1808px));
+  }
+
+  to {
+    transform: translateX(-100%);
+  }
+}

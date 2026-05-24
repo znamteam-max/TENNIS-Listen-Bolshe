@@ -7,6 +7,24 @@ const DEFAULT_MATCH_ID = "Sril3X2m";
 const DEFAULT_MATCH_URL =
   "https://www.flashscore.com/match/tennis/jasika-omar-lOWZLw6o/stewart-hamish-0j2A0w2n/?mid=Sril3X2m";
 const TELEGRAM_WEBHOOK_PATH = "/telegram/webhook";
+const NEWS_TICKER_PATH = "/news-ticker.html";
+const NEWS_LIMIT = 15;
+const NEWS_CANDIDATE_LIMIT = 60;
+const NEWS_SOURCE_PAGES = 2;
+const NEWS_CTA = "смотрите прямую трансляцию на Больше! в ВК, ссылка в описании";
+const NEWS_SAFE_HARD_PATTERNS = [
+  { reason: "ukraine", pattern: /украин|україн|ukrain/i },
+  { reason: "belarus", pattern: /беларус|белорус|belarus/i },
+  { reason: "sanctions", pattern: /санкц|отстран|бан\b|забан|исключен|исключили/i },
+  { reason: "politics", pattern: /политик|политичес|запад|мок\b|ioc\b|минспорт|дегтяр|(^|[^а-яa-z])путин([^а-яa-z]|$)/i },
+  { reason: "symbols", pattern: /флаг|гимн|нейтральн/i },
+  { reason: "war", pattern: /войн|бомбард|перестрел|обстрел/i },
+  { reason: "ukraine-handshake", pattern: /олейников[а-я\s-]+путинцев|путинцев[а-я\s-]+олейников/i },
+  { reason: "nationality-conflict", pattern: /национальн|религи|цвет кожи|нацист|рукопожат|санкт[\s-]*петербург/i },
+  { reason: "lgbt", pattern: /лгбт|lgbt|трансгендер|гендер/i }
+];
+const NEWS_COUNTRY_CONTEXT_PATTERN = /росси|russia|беларус|белорус|belarus/i;
+const NEWS_POLITICAL_CONTEXT_PATTERN = /санкц|отстран|допуск|нейтральн|флаг|гимн|мок\b|ioc\b|запад|политик|министр|минспорт|дегтяр|путин|войн|бомбард|перестрел|национальн|религи|гражданств|уимблдон|wimbledon/i;
 
 const PROGRAM_LABELS = {
   obs: "OBS",
@@ -43,8 +61,11 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/" || url.pathname === "/overlay.html") return html(OVERLAY_HTML);
+    if (url.pathname === NEWS_TICKER_PATH || url.pathname === "/ticker.html") return html(NEWS_TICKER_HTML);
     if (url.pathname === "/overlay.css") return text(OVERLAY_CSS, "text/css; charset=utf-8");
     if (url.pathname === "/overlay.js") return text(OVERLAY_JS, "text/javascript; charset=utf-8");
+    if (url.pathname === "/news-ticker.css") return text(NEWS_TICKER_CSS, "text/css; charset=utf-8");
+    if (url.pathname === "/news-ticker.js") return text(NEWS_TICKER_JS, "text/javascript; charset=utf-8");
     if (url.pathname === "/api/health") return json({ ok: true, service: "tennis-listen-bolshe-overlay" });
     if (url.pathname === "/api/news/tennis") {
       try {
@@ -91,6 +112,7 @@ export default {
       service: "tennis-listen-bolshe-overlay",
       routes: [
         "/overlay.html",
+        NEWS_TICKER_PATH,
         "/api/health",
         "/api/matches",
         "/api/live-matches",
@@ -226,24 +248,54 @@ function normalizeName(value) {
 
 async function sportsTennisNews(env) {
   const sourceUrl = String(env.SPORTS_TENNIS_NEWS_URL || SPORTS_TENNIS_NEWS_URL).trim();
-  const response = await fetch(sourceUrl, {
-    headers: {
-      "user-agent": "Mozilla/5.0 Tennis Overlay News Bot",
-      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4"
-    },
-    cf: { cacheTtl: 120, cacheEverything: false }
-  });
-  if (!response.ok) throw new Error(`Sports.ru ${response.status}`);
-  const htmlValue = await response.text();
-  const items = parseSportsTennisNews(htmlValue, sourceUrl, 15);
-  if (!items.length) throw new Error("Sports.ru news parser returned no items");
+  const pages = await sportsNewsPages(sourceUrl);
+  const candidates = uniqueNewsItems(pages.flatMap(({ htmlValue, pageUrl }) => parseSportsTennisNews(htmlValue, pageUrl, NEWS_CANDIDATE_LIMIT)));
+  const moderation = await safeNewsItems(candidates, NEWS_LIMIT);
+  const items = moderation.items;
+  if (!items.length) throw new Error("Sports.ru safe news parser returned no items");
   return {
     ok: true,
     source: "sports.ru",
     sourceUrl,
     generatedAt: new Date().toISOString(),
+    moderation: {
+      safe: true,
+      blocked: moderation.blocked.length,
+      scanned: moderation.scanned
+    },
     items
+  };
+}
+
+async function sportsNewsPages(sourceUrl) {
+  const pages = [];
+  for (let page = 1; page <= NEWS_SOURCE_PAGES; page += 1) {
+    const pageUrl = sportsNewsPageUrl(sourceUrl, page);
+    const response = await fetch(pageUrl, {
+      headers: sportsNewsHeaders(),
+      cf: { cacheTtl: 120, cacheEverything: false }
+    });
+    if (!response.ok) {
+      if (page === 1) throw new Error(`Sports.ru ${response.status}`);
+      continue;
+    }
+    pages.push({ pageUrl, htmlValue: await response.text() });
+  }
+  return pages;
+}
+
+function sportsNewsPageUrl(sourceUrl, page) {
+  if (page <= 1) return sourceUrl;
+  const url = new URL(sourceUrl);
+  url.searchParams.set("page", String(page));
+  return url.toString();
+}
+
+function sportsNewsHeaders() {
+  return {
+    "user-agent": "Mozilla/5.0 Tennis Overlay News Bot",
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4"
   };
 }
 
@@ -269,10 +321,103 @@ function parseSportsTennisNews(htmlValue, sourceUrl, limit = 15) {
       title,
       url,
       source: "Sports.ru",
-      time
+      time,
+      context: cleanHtmlText(row)
     });
   }
   return items;
+}
+
+function uniqueNewsItems(items) {
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const key = String(item.url || "").split("#", 1)[0];
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+async function safeNewsItems(candidates, limit) {
+  const items = [];
+  const blocked = [];
+  let scanned = 0;
+
+  for (const item of candidates) {
+    if (scanned >= NEWS_CANDIDATE_LIMIT || items.length >= limit) break;
+    scanned += 1;
+
+    const reasons = await newsModerationReasonsForItem(item);
+    if (reasons.length) {
+      blocked.push({ title: item.title, url: item.url, reasons });
+      continue;
+    }
+    items.push(newsPublicItem(item));
+  }
+
+  return { items, blocked, scanned };
+}
+
+function newsPublicItem(item) {
+  return {
+    title: item.title,
+    url: item.url,
+    source: item.source,
+    time: item.time
+  };
+}
+
+async function newsModerationReasonsForItem(item) {
+  const initial = newsModerationReasons([item.title, item.url, item.context].filter(Boolean).join(" "));
+  if (initial.length) return initial;
+
+  const articleText = await fetchSportsArticlePlainText(item.url);
+  return newsModerationReasons(articleText);
+}
+
+async function fetchSportsArticlePlainText(url) {
+  try {
+    const response = await fetch(url, {
+      headers: sportsNewsHeaders(),
+      cf: { cacheTtl: 300, cacheEverything: false }
+    });
+    if (!response.ok) return "";
+    const htmlValue = await response.text();
+    return sportsArticlePlainText(htmlValue).slice(0, 12000);
+  } catch (_error) {
+    return "";
+  }
+}
+
+function sportsArticlePlainText(htmlValue) {
+  const start = htmlValue.indexOf("<h1");
+  if (start < 0) return cleanHtmlText(htmlValue.slice(0, 30000));
+
+  const commentStart = htmlValue.indexOf("comments-list", start);
+  const contentEnd = commentStart > start ? commentStart : start + 30000;
+  return cleanHtmlText(htmlValue.slice(start, contentEnd));
+}
+
+function newsModerationReasons(value) {
+  const textValue = normalizeModerationText(value);
+  if (!textValue) return [];
+
+  const reasons = [];
+  for (const rule of NEWS_SAFE_HARD_PATTERNS) {
+    if (rule.pattern.test(textValue)) reasons.push(rule.reason);
+  }
+
+  if (NEWS_COUNTRY_CONTEXT_PATTERN.test(textValue) && NEWS_POLITICAL_CONTEXT_PATTERN.test(textValue)) {
+    reasons.push("country-politics-context");
+  }
+
+  return [...new Set(reasons)];
+}
+
+function normalizeModerationText(value) {
+  return String(value || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
 }
 
 function sportsTopNewsSection(htmlValue) {
@@ -1389,4 +1534,96 @@ refreshNews();
 setInterval(refreshMatch, Math.max(config.poll, 1000));
 setInterval(refreshNews, 60000);
 setInterval(refreshOdds, 60000);
+`;
+
+const NEWS_TICKER_HTML = `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Больше! tennis news ticker</title>
+<link rel="stylesheet" href="/news-ticker.css">
+</head>
+<body>
+<main class="news-ticker-overlay" aria-label="Бегущая строка новостей">
+  <section class="ticker" aria-label="Новости">
+    <div class="ticker-logo" aria-hidden="true"><span></span></div>
+    <div class="ticker-mask"><div id="tickerTrack" class="ticker-track">Загружаем новости...</div></div>
+  </section>
+</main>
+<script src="/news-ticker.js"></script>
+</body>
+</html>`;
+
+const NEWS_TICKER_CSS = `@import url("https://fonts.googleapis.com/css2?family=Sofia+Sans:ital,wght@0,400..900;1,400..900&display=swap");:root{--purple:#4b2b86;--lime:#dfff24;--ticker-height:102px}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;font-family:"Sofia Sans",Arial,sans-serif}.news-ticker-overlay{position:relative;width:1920px;height:var(--ticker-height);overflow:hidden;transform-origin:top left;background:transparent}.ticker{position:absolute;inset:0;overflow:hidden;background:linear-gradient(112deg,#6b3fad 0%,#513397 34%,#caff22 42%,#6440a4 49%,#43176f 100%)}.ticker:before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(17deg,rgba(255,255,255,.16) 0 1px,transparent 1px 4px);opacity:.45}.ticker-logo{position:absolute;left:31px;top:19px;z-index:3;width:64px;height:64px;border-radius:50%;background:#fff}.ticker-logo span{position:absolute;left:16px;top:11px;width:31px;height:42px;overflow:hidden;border-radius:4px}.ticker-logo span:before{content:"";position:absolute;left:-12px;top:3px;width:38px;height:38px;border:9px solid var(--purple);border-left:0;border-bottom:0;transform:rotate(45deg)}.ticker-mask{position:absolute;left:112px;right:0;top:0;z-index:2;height:var(--ticker-height);overflow:hidden}.ticker-track{position:absolute;left:0;top:0;display:inline-flex;align-items:center;height:var(--ticker-height);color:#fff;font-family:"Sofia Sans",Arial,sans-serif;font-size:42px;font-style:italic;font-weight:900;line-height:var(--ticker-height);text-shadow:0 2px 2px rgba(0,0,0,.18);text-transform:uppercase;white-space:nowrap;will-change:transform;animation:none}@keyframes ticker-scroll{from{transform:translateX(var(--ticker-start,1808px))}to{transform:translateX(-100%)}}`;
+
+const NEWS_TICKER_JS = `
+const params = new URLSearchParams(window.location.search);
+const DEFAULT_CTA = ${JSON.stringify(NEWS_CTA)};
+const TICKER_SPEEDS = { slow: 26, normal: 36, fast: 52 };
+const config = {
+  news: params.get("news") || "/api/news/tennis",
+  ticker: params.get("ticker") || params.get("speed") || "slow",
+  refresh: Number(params.get("refresh") || 60000),
+  cta: params.get("cta") || DEFAULT_CTA
+};
+const refs = {
+  mask: document.querySelector(".ticker-mask"),
+  track: document.querySelector("#tickerTrack")
+};
+let newsTickerText = "Загружаем новости...";
+let tickerMode = "news";
+let tickerStarted = false;
+function tickerSpeed() {
+  const configured = TICKER_SPEEDS[config.ticker];
+  if (Number.isFinite(configured)) return configured;
+  const numeric = Number(config.ticker);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.min(Math.max(numeric, 12), 90) : TICKER_SPEEDS.slow;
+}
+function tickerText() {
+  return tickerMode === "cta" ? config.cta : newsTickerText;
+}
+function restartTicker() {
+  refs.track.style.animation = "none";
+  refs.track.textContent = tickerText();
+  const maskWidth = refs.mask.clientWidth || 1808;
+  refs.track.style.setProperty("--ticker-start", maskWidth + "px");
+  const distance = maskWidth + (refs.track.scrollWidth || 1200);
+  const duration = Math.max(28, Math.round(distance / tickerSpeed()));
+  refs.track.style.setProperty("--ticker-duration", duration + "s");
+  void refs.track.offsetWidth;
+  refs.track.style.animation = "ticker-scroll var(--ticker-duration) linear 1";
+}
+function ensureTickerStarted() {
+  if (tickerStarted) return;
+  tickerStarted = true;
+  tickerMode = "news";
+  restartTicker();
+}
+function renderNews(payload) {
+  const list = Array.isArray(payload) ? payload : payload.items || [];
+  newsTickerText = list.map((item) => item.title || item).filter(Boolean).join("   •   ") || "Новости временно недоступны";
+  if (tickerMode === "news") restartTicker();
+  ensureTickerStarted();
+}
+async function refreshNews() {
+  try {
+    const response = await fetch(config.news, { cache: "no-store" });
+    if (!response.ok) throw new Error(response.status + " " + response.statusText);
+    renderNews(await response.json());
+  } catch (_error) {
+    newsTickerText = "Новости временно недоступны";
+    if (tickerMode === "news") restartTicker();
+    ensureTickerStarted();
+  }
+}
+refs.track.addEventListener("animationend", () => {
+  tickerMode = tickerMode === "news" ? "cta" : "news";
+  restartTicker();
+});
+window.addEventListener("resize", () => {
+  if (tickerStarted) restartTicker();
+});
+refreshNews();
+setInterval(refreshNews, Math.max(config.refresh, 10000));
 `;

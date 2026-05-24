@@ -8,6 +8,7 @@ import { getFlashscoreMatch } from "./lib/flashscore-adapter.mjs";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(__dirname, "public");
 const port = Number(process.env.PORT || 5173);
+const productionNewsUrl = "https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/news/tennis";
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -74,6 +75,14 @@ const handleFlashscore = async (req, res, url) => {
   sendJson(res, 200, data);
 };
 
+const handleNews = async (req, res) => {
+  const upstream = await fetch(productionNewsUrl, {
+    headers: { "user-agent": "Mozilla/5.0 Tennis Overlay Local Preview" }
+  });
+  const payload = await upstream.json();
+  sendJson(res, upstream.ok ? 200 : 502, payload);
+};
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -90,6 +99,11 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/match/flashscore") {
       await handleFlashscore(req, res, url);
+      return;
+    }
+
+    if (url.pathname === "/api/news/tennis") {
+      await handleNews(req, res);
       return;
     }
 

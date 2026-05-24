@@ -5,6 +5,7 @@ Cloudflare Worker для live-теннисного оверлея и отдел�
 ## Production
 
 - Overlay: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/overlay.html`
+- Standalone news ticker: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/news-ticker.html`
 - Health: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/health`
 - Live matches API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/live-matches`
 - Live tennis news API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/news/tennis`
@@ -30,13 +31,26 @@ The deploy workflow syncs these into Cloudflare Worker secrets and calls Telegra
 
 ## Live News
 
-`/api/news/tennis` pulls the latest 15 tennis headlines from:
+`/api/news/tennis` pulls the latest safe tennis headlines from:
 
 ```text
 https://www.sports.ru/tennis/news/top/
 ```
 
-The overlay ticker refreshes this feed every minute, scrolls at the speed chosen in Telegram, and alternates a full news pass with the "watch the stream by the link in the description" promo line. If Sports.ru is temporarily unavailable, the endpoint returns a small fallback ticker instead of breaking the overlay.
+The API scans the first Sports.ru tennis news pages, removes politically sensitive/risky stories (Ukraine, Russia/Belarus sanctions, flags, hymns, officials, war/political language, etc.), and returns up to 15 safe headlines. The overlay ticker refreshes this feed every minute, scrolls at the speed chosen in Telegram, and alternates a full news pass with the "watch the stream by the link in the description" promo line. If Sports.ru is temporarily unavailable, the endpoint returns a small fallback ticker instead of breaking the overlay.
+
+Standalone ticker for other projects:
+
+```text
+https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/news-ticker.html?ticker=slow
+```
+
+Browser Source size: `1920x102`. Query params:
+
+- `ticker=slow|normal|fast` or a numeric pixels-per-second value;
+- `news=https://.../api/news/tennis` to override the JSON feed;
+- `cta=...` to override the promo line;
+- `refresh=60000` to change the feed refresh interval in milliseconds.
 
 ## Winline Odds
 
