@@ -2,7 +2,6 @@
 
 :root {
   --canvas-width: 1920px;
-  --canvas-height: 1080px;
   --ticker-height: 102px;
   --ticker-safe-left: 150px;
   --ticker-fade-width: 112px;
@@ -28,7 +27,7 @@ body {
 .news-ticker-overlay {
   position: relative;
   width: var(--canvas-width);
-  height: var(--canvas-height);
+  height: var(--ticker-height);
   overflow: hidden;
   transform-origin: top left;
   background: transparent;
@@ -36,9 +35,7 @@ body {
 
 .ticker {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   height: var(--ticker-height);
   overflow: hidden;
   background:
