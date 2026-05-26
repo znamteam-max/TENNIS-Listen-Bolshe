@@ -6,6 +6,9 @@
   --ticker-height: 102px;
   --ticker-safe-left: 150px;
   --ticker-fade-width: 112px;
+  --purple: #3c1474;
+  --deep-purple: #260545;
+  --lime: #dfff24;
 }
 
 * {
@@ -28,7 +31,7 @@ body {
   height: var(--canvas-height);
   overflow: hidden;
   transform-origin: top left;
-  background: url("/news-ticker-bg.png") center / 100% 100% no-repeat;
+  background: transparent;
 }
 
 .ticker {
@@ -38,6 +41,31 @@ body {
   bottom: 0;
   height: var(--ticker-height);
   overflow: hidden;
+  background:
+    radial-gradient(ellipse at 58% 58%, rgba(223, 255, 36, 0.95) 0 8%, rgba(223, 255, 36, 0.66) 13%, rgba(223, 255, 36, 0) 25%),
+    linear-gradient(103deg, #52219a 0%, #4a178a 36%, #6c38b5 45%, #dfff24 53%, #733abd 64%, #4a1784 82%, #260545 100%);
+}
+
+.ticker::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(9deg, rgba(255, 255, 255, 0.18) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(101deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 5px);
+  mix-blend-mode: screen;
+  opacity: 0.46;
+}
+
+.ticker::after {
+  content: "";
+  position: absolute;
+  left: 24px;
+  top: 18px;
+  z-index: 3;
+  width: 116px;
+  height: 78px;
+  background: url("/news-ticker-logo.png") left center / contain no-repeat;
 }
 
 .ticker-mask {
