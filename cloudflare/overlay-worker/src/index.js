@@ -65,7 +65,7 @@ export default {
     if (url.pathname === NEWS_TICKER_PATH || url.pathname === "/ticker.html") return html(NEWS_TICKER_HTML);
     if (url.pathname === "/overlay.css") return text(OVERLAY_CSS, "text/css; charset=utf-8");
     if (url.pathname === "/overlay.js") return text(OVERLAY_JS, "text/javascript; charset=utf-8");
-    if (url.pathname === "/news-ticker.css") return text(NEWS_TICKER_CSS, "text/css; charset=utf-8");
+    if (url.pathname === "/news-ticker.css") return text(newsTickerCss(), "text/css; charset=utf-8");
     if (url.pathname === "/news-ticker.js") return text(NEWS_TICKER_JS, "text/javascript; charset=utf-8");
     if (url.pathname === "/news-ticker-bg.png") return png(newsTickerBackground());
     if (url.pathname === "/api/health") return json({ ok: true, service: "tennis-listen-bolshe-overlay" });
@@ -1202,6 +1202,13 @@ function html(body) {
 
 function text(body, contentType) {
   return new Response(body, { headers: { "content-type": contentType, "cache-control": "public, max-age=60" } });
+}
+
+function newsTickerCss() {
+  return NEWS_TICKER_CSS.replace(
+    'url("/news-ticker-bg.png")',
+    `url("data:image/png;base64,${NEWS_TICKER_BG_BASE64}")`
+  );
 }
 
 function png(body) {
