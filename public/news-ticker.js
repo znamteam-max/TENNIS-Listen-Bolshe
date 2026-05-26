@@ -1,12 +1,11 @@
 const params = new URLSearchParams(window.location.search);
-const DEFAULT_CTA = "смотрите прямую трансляцию на Больше! в ВК, ссылка в описании";
 const TICKER_SPEEDS = { slow: 26, normal: 36, fast: 52 };
 
 const config = {
   news: params.get("news") || "/api/news/tennis",
   ticker: params.get("ticker") || params.get("speed") || "slow",
   refresh: Number(params.get("refresh") || 60000),
-  cta: params.get("cta") || DEFAULT_CTA
+  limit: Math.min(Math.max(Number(params.get("limit") || 15), 1), 15)
 };
 
 const refs = {
@@ -14,9 +13,11 @@ const refs = {
   track: document.querySelector("#tickerTrack")
 };
 
-let newsTickerText = "Загружаем новости...";
-let tickerMode = "news";
+let activeNewsText = "Загружаем новости...";
+let queuedNewsText = "";
 let tickerStarted = false;
+let fetchInFlight = null;
+let switchingCycle = false;
 
 function tickerSpeed() {
   const configured = TICKER_SPEEDS[config.ticker];
@@ -25,14 +26,25 @@ function tickerSpeed() {
   return Number.isFinite(numeric) && numeric > 0 ? Math.min(Math.max(numeric, 12), 90) : TICKER_SPEEDS.slow;
 }
 
-function tickerText() {
-  return tickerMode === "cta" ? config.cta : newsTickerText;
+function newsTextFromPayload(payload) {
+  const list = Array.isArray(payload) ? payload : payload.items || [];
+  return list
+    .map((item) => item.title || item)
+    .filter(Boolean)
+    .slice(0, config.limit)
+    .join("   •   ") || "Новости временно недоступны";
+}
+
+async function fetchNewsText() {
+  const response = await fetch(config.news, { cache: "no-store" });
+  if (!response.ok) throw new Error(response.status + " " + response.statusText);
+  return newsTextFromPayload(await response.json());
 }
 
 function restartTicker() {
   refs.track.style.animation = "none";
-  refs.track.textContent = tickerText();
-  const maskWidth = refs.mask.clientWidth || 1808;
+  refs.track.textContent = activeNewsText;
+  const maskWidth = refs.mask.clientWidth || 1770;
   refs.track.style.setProperty("--ticker-start", maskWidth + "px");
   const distance = maskWidth + (refs.track.scrollWidth || 1200);
   const duration = Math.max(28, Math.round(distance / tickerSpeed()));
@@ -41,40 +53,62 @@ function restartTicker() {
   refs.track.style.animation = "ticker-scroll var(--ticker-duration) linear 1";
 }
 
-function ensureTickerStarted() {
+function startTicker() {
   if (tickerStarted) return;
   tickerStarted = true;
-  tickerMode = "news";
   restartTicker();
 }
 
-function renderNews(payload) {
-  const list = Array.isArray(payload) ? payload : payload.items || [];
-  newsTickerText = list.map((item) => item.title || item).filter(Boolean).join("   •   ") || "Новости временно недоступны";
-  if (tickerMode === "news") restartTicker();
-  ensureTickerStarted();
+async function queueNewsRefresh() {
+  if (fetchInFlight) return fetchInFlight;
+  fetchInFlight = fetchNewsText()
+    .then((text) => {
+      queuedNewsText = text;
+    })
+    .catch(() => {
+      queuedNewsText = "Новости временно недоступны";
+    })
+    .finally(() => {
+      fetchInFlight = null;
+    });
+  return fetchInFlight;
 }
 
-async function refreshNews() {
+async function loadInitialNews() {
   try {
-    const response = await fetch(config.news, { cache: "no-store" });
-    if (!response.ok) throw new Error(response.status + " " + response.statusText);
-    renderNews(await response.json());
+    activeNewsText = await fetchNewsText();
   } catch (_error) {
-    newsTickerText = "Новости временно недоступны";
-    if (tickerMode === "news") restartTicker();
-    ensureTickerStarted();
+    activeNewsText = "Новости временно недоступны";
   }
+  startTicker();
+  queueNewsRefresh();
 }
 
-refs.track.addEventListener("animationend", () => {
-  tickerMode = tickerMode === "news" ? "cta" : "news";
+async function switchToNextNewsCycle() {
+  if (switchingCycle) return;
+  switchingCycle = true;
+
+  if (queuedNewsText) {
+    activeNewsText = queuedNewsText;
+    queuedNewsText = "";
+  } else {
+    try {
+      activeNewsText = await fetchNewsText();
+    } catch (_error) {
+      activeNewsText = "Новости временно недоступны";
+    }
+  }
+
   restartTicker();
-});
+  switchingCycle = false;
+  queueNewsRefresh();
+}
+
+refs.track.addEventListener("animationend", switchToNextNewsCycle);
 
 window.addEventListener("resize", () => {
   if (tickerStarted) restartTicker();
 });
 
-refreshNews();
-setInterval(refreshNews, Math.max(config.refresh, 10000));
+loadInitialNews();
+setInterval(queueNewsRefresh, Math.max(config.refresh, 10000));
