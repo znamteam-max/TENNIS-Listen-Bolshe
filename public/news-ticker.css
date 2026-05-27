@@ -3,6 +3,11 @@
 :root {
   --canvas-width: 1920px;
   --ticker-height: 102px;
+  --ticker-font-size: 42px;
+  --ticker-logo-left: 24px;
+  --ticker-logo-top: 18px;
+  --ticker-logo-width: 116px;
+  --ticker-logo-height: 78px;
   --ticker-safe-left: 150px;
   --ticker-fade-width: 112px;
   --purple: #3c1474;
@@ -57,11 +62,11 @@ body {
 .ticker::after {
   content: "";
   position: absolute;
-  left: 24px;
-  top: 18px;
+  left: var(--ticker-logo-left);
+  top: var(--ticker-logo-top);
   z-index: 3;
-  width: 116px;
-  height: 78px;
+  width: var(--ticker-logo-width);
+  height: var(--ticker-logo-height);
   background: url("/news-ticker-logo.png") left center / contain no-repeat;
 }
 
@@ -98,7 +103,7 @@ body {
   height: var(--ticker-height);
   color: #fff;
   font-family: "Sofia Sans", Arial, sans-serif;
-  font-size: 42px;
+  font-size: var(--ticker-font-size);
   font-style: italic;
   font-weight: 900;
   line-height: var(--ticker-height);

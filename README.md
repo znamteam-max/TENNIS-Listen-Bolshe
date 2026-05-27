@@ -42,15 +42,22 @@ The API scans the first Sports.ru tennis news pages, removes politically sensiti
 Standalone ticker for other projects:
 
 ```text
-https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/news-ticker.html?ticker=slow
+https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/news-ticker.html?ticker=slow&height=normal
 ```
 
-Browser Source size: `1920x102`. Query params:
+Browser Source width: `1920`. Height depends on the `height` query param. Query params:
 
 - `ticker=slow|normal|fast` or a numeric pixels-per-second value;
+- `height=small|normal|large` or a numeric pixel value, for example `height=51` or `height=72`;
 - `news=https://.../api/news/tennis` to override the JSON feed;
 - `cta=...` to override the promo line;
 - `refresh=60000` to change the feed refresh interval in milliseconds.
+
+Recommended Browser Source sizes:
+
+- `height=small`: `1920x51`;
+- `height=normal`: `1920x102`;
+- `height=large`: `1920x128`.
 
 ## Winline Odds
 
