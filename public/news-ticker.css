@@ -10,6 +10,8 @@
   --ticker-logo-height: 78px;
   --ticker-safe-left: 150px;
   --ticker-fade-width: 112px;
+  --ticker-cta-size: 52px;
+  --ticker-arrow-size: 64px;
   --purple: #3c1474;
   --deep-purple: #260545;
   --lime: #dfff24;
@@ -112,6 +114,39 @@ body {
   white-space: nowrap;
   will-change: transform;
   animation: none;
+}
+
+.ticker-cta {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  color: #fff;
+  text-transform: uppercase;
+  text-shadow: 0 2px 2px rgba(0, 0, 0, 0.24);
+  font-family: "Sofia Sans", Arial, sans-serif;
+  pointer-events: none;
+}
+
+.ticker-cta[hidden] {
+  display: none;
+}
+
+.ticker-cta-text {
+  font-size: var(--ticker-cta-size);
+  line-height: 1;
+  font-weight: 900;
+  font-style: italic;
+}
+
+.ticker-cta-arrow {
+  color: var(--lime);
+  font-size: var(--ticker-arrow-size);
+  line-height: 1;
+  font-weight: 900;
 }
 
 @keyframes ticker-scroll {

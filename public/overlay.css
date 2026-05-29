@@ -1,1 +1,511 @@
-@import url("https://fonts.googleapis.com/css2?family=Sofia+Sans:ital,wght@0,400..900;1,400..900&family=Sofia+Sans+Condensed:ital,wght@0,400..900;1,400..900&display=swap");:root{--purple:#4b2b86;--lime:#dfff24;--green:#205900;--black:#111117;--line:#a9a9a9;--white:#fff;--blue:#006bff;--scale:1}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;font-family:"Sofia Sans",Arial,sans-serif;color:#111}.overlay{position:relative;width:1920px;height:1080px;overflow:hidden;background:transparent;transform-origin:top left}.left-panel{position:absolute;left:0;top:0;width:540px;height:978px;background:#fff;overflow:hidden}.promo-art{position:absolute;left:0;top:0;width:540px;height:226px;overflow:hidden;background:linear-gradient(180deg,rgba(38,13,10,.1),rgba(38,13,10,.34)),radial-gradient(circle at 52% 62%,#f2d08d 0 8%,#be6b38 20%,#4a211d 56%,#121018 100%)}.promo-art:before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.42),transparent 26%,transparent 74%,rgba(0,0,0,.42)),repeating-linear-gradient(90deg,rgba(255,255,255,.14) 0 2px,transparent 2px 46px);mix-blend-mode:screen;opacity:.7}.promo-title-main{position:absolute;left:78px;top:0;width:390px;text-align:center;color:#fff;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:40px;line-height:1;font-weight:900;font-style:italic;text-shadow:0 2px 4px rgba(0,0,0,.45)}.promo-pill{position:absolute;left:164px;top:82px;padding:3px 9px;border-radius:5px;background:#15151a;color:#fff;font-size:13px;line-height:16px;font-weight:900}.promo-pill b{color:var(--lime);font-style:italic}.stats-title{position:absolute;left:0;top:226px;width:540px;height:67px;background:#fff;color:var(--purple);font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:51px;line-height:67px;font-weight:900;font-style:italic;text-align:center}.stats-head{position:absolute;left:0;top:293px;width:540px;height:60px;background:var(--purple);display:grid;grid-template-columns:181px 182px 177px;align-items:center}.team-code{color:#fff;font-size:30px;font-weight:900;text-align:center}.team-code:first-child{grid-column:1}.team-code:last-child{grid-column:3}.stats-grid{position:absolute;left:0;top:353px;width:540px;height:420px;display:grid;grid-template-rows:repeat(7,60px);background:#fff}.stat-row-template{display:grid;grid-template-columns:181px 182px 177px;min-height:60px}.stat-cell{height:60px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--line);font-size:26px;font-weight:800;color:var(--purple);text-align:center;white-space:nowrap}.stat-label{height:60px;display:flex;align-items:center;justify-content:center;padding:0 14px;background:var(--purple);color:#fff;border-bottom:0;font-size:17px;line-height:18px;font-weight:900;text-align:center;text-transform:uppercase}.stats-time{position:absolute;left:181px;top:313px;width:182px;height:20px;color:#fff;background:var(--purple);font-size:12px;font-weight:900;text-align:center;line-height:20px;opacity:.95}.odds-panel{position:absolute;left:0;top:778px;width:540px;height:200px;background:var(--black);border-top:1px solid #24242c}.odds-title{position:absolute;left:62px;top:20px;color:#fff;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:38px;line-height:40px;font-weight:900;font-style:italic}.odds-values{position:absolute;left:56px;right:54px;top:91px;display:flex;justify-content:space-between}.odds-box{width:146px;height:66px;display:flex;align-items:center;justify-content:center;transform:skew(-10deg);background:var(--blue);color:#fff;font-size:34px;font-weight:900;line-height:1}.odds-box::first-letter{transform:skew(10deg)}.video-zone{position:absolute;left:546px;top:0;width:1374px;height:773px;background:var(--green)}.score-strip{position:absolute;left:546px;top:773px;width:1374px;height:205px;background:#fff;overflow:hidden}.score-tournament{position:absolute;left:222px;top:21px;width:700px;height:36px;color:#111;font-size:31px;line-height:36px;font-weight:500;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.score-clock{position:absolute;right:165px;top:19px;width:180px;height:36px;text-align:center;color:#111;font-size:31px;line-height:36px;font-weight:500;white-space:nowrap}.score-row{position:absolute;left:68px;width:1220px;height:60px;display:grid;grid-template-columns:72px 36px 61px 1fr repeat(5,54px);column-gap:12px;align-items:center}.score-row.home{top:71px}.score-row.away{top:134px}.country-code{font-size:31px;font-weight:500;text-align:left;line-height:44px}.serve-slot{width:36px;height:48px;display:flex;align-items:center;justify-content:center}.tennis-ball{width:22px;height:22px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff67a 0 12%,#dfff24 34%,#a5c90b 100%);box-shadow:0 0 12px rgba(212,255,31,.8);opacity:0;position:relative}.tennis-ball:before,.tennis-ball:after{content:"";position:absolute;top:2px;bottom:2px;width:12px;border:2px solid rgba(255,255,255,.9);border-left:0;border-radius:50%;opacity:.9}.tennis-ball:before{left:2px;transform:rotate(24deg)}.tennis-ball:after{right:2px;transform:rotate(204deg)}.score-row.serving .tennis-ball{opacity:1}.player-photo{width:58px;height:58px;border-radius:50%;object-fit:cover;background:var(--lime);border:4px solid var(--lime)}.score-name{min-width:0;color:#000;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:43px;line-height:54px;font-weight:900;font-style:italic;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.set-cell{width:54px;height:48px;display:flex;align-items:center;justify-content:center;color:#111;font-size:34px;font-weight:600;line-height:1}.set-cell.tie-break{width:42px;height:42px;justify-self:center;background:var(--purple);color:#fff;border-radius:2px;font-weight:900}.ticker{position:absolute;left:0;right:0;bottom:0;height:102px;overflow:hidden;background:linear-gradient(112deg,#6b3fad 0%,#513397 34%,#caff22 42%,#6440a4 49%,#43176f 100%)}.ticker:before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(17deg,rgba(255,255,255,.16) 0 1px,transparent 1px 4px);opacity:.45}.ticker-logo{position:absolute;left:31px;top:22px;width:64px;height:64px;border-radius:50%;background:#fff;z-index:3}.ticker-logo span{position:absolute;left:16px;top:11px;width:31px;height:42px;border-radius:4px;overflow:hidden}.ticker-logo span:before{content:"";position:absolute;left:-12px;top:3px;width:38px;height:38px;border:9px solid var(--purple);border-left:0;border-bottom:0;transform:rotate(45deg)}.ticker-mask{position:absolute;left:112px;right:0;top:0;height:102px;overflow:hidden;z-index:2}.ticker-track{position:absolute;left:0;top:0;height:102px;display:inline-flex;align-items:center;white-space:nowrap;color:#fff;font-family:"Sofia Sans Condensed",Arial,sans-serif;font-size:42px;line-height:102px;font-weight:900;font-style:italic;text-transform:uppercase;text-shadow:0 2px 2px rgba(0,0,0,.18);will-change:transform;animation:none}.guides .left-panel,.guides .video-zone,.guides .score-strip,.guides .ticker{outline:2px solid rgba(202,255,61,.8)}@keyframes ticker{from{transform:translateX(var(--ticker-start,1808px))}to{transform:translateX(-100%)}}
+@import url("https://fonts.googleapis.com/css2?family=Sofia+Sans:ital,wght@0,400..900;1,400..900&family=Sofia+Sans+Condensed:ital,wght@0,400..900;1,400..900&display=swap");
+
+:root {
+  --purple: #4b2b86;
+  --lime: #dfff24;
+  --green: #205900;
+  --black: #111117;
+  --line: #a9a9a9;
+  --blue: #006bff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Sofia Sans", Arial, sans-serif;
+  color: #111;
+}
+
+.overlay {
+  position: relative;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: transparent;
+  transform-origin: top left;
+}
+
+.left-panel {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 540px;
+  height: 978px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.promo-art {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 540px;
+  height: 226px;
+  overflow: hidden;
+  background: #230a1f;
+}
+
+.promo-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.stats-title {
+  position: absolute;
+  left: 0;
+  top: 226px;
+  width: 540px;
+  height: 67px;
+  background: #fff;
+  color: var(--purple);
+  font-family: "Sofia Sans Condensed", Arial, sans-serif;
+  font-size: 51px;
+  line-height: 67px;
+  font-weight: 900;
+  font-style: italic;
+  text-align: center;
+}
+
+.stats-head {
+  position: absolute;
+  left: 0;
+  top: 293px;
+  width: 540px;
+  height: 60px;
+  background: var(--purple);
+  display: grid;
+  grid-template-columns: 181px 182px 177px;
+  align-items: center;
+}
+
+.team-code {
+  color: #fff;
+  font-size: 30px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.team-code:first-child {
+  grid-column: 1;
+}
+
+.team-code:last-child {
+  grid-column: 3;
+}
+
+.stats-grid {
+  position: absolute;
+  left: 0;
+  top: 353px;
+  width: 540px;
+  height: 420px;
+  display: grid;
+  grid-template-rows: repeat(7, 60px);
+  background: #fff;
+}
+
+.stat-row-template {
+  display: grid;
+  grid-template-columns: 181px 182px 177px;
+  min-height: 60px;
+}
+
+.stat-cell {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--line);
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--purple);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.stat-label {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  background: var(--purple);
+  color: #fff;
+  border-bottom: 0;
+  font-size: 17px;
+  line-height: 18px;
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.odds-panel {
+  position: absolute;
+  left: 0;
+  top: 778px;
+  width: 540px;
+  height: 200px;
+  background: var(--black);
+  border-top: 1px solid #24242c;
+}
+
+.odds-title {
+  position: absolute;
+  left: 62px;
+  top: 20px;
+  color: #fff;
+  font-family: "Sofia Sans Condensed", Arial, sans-serif;
+  font-size: 38px;
+  line-height: 40px;
+  font-weight: 900;
+  font-style: italic;
+}
+
+.odds-values {
+  position: absolute;
+  left: 56px;
+  right: 54px;
+  top: 91px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.odds-box {
+  width: 146px;
+  height: 66px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: skew(-10deg);
+  background: var(--blue);
+  color: #fff;
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.video-zone {
+  position: absolute;
+  left: 546px;
+  top: 0;
+  width: 1374px;
+  height: 773px;
+  background: var(--green);
+}
+
+.score-strip {
+  position: absolute;
+  left: 546px;
+  top: 773px;
+  width: 1374px;
+  height: 205px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.score-tournament {
+  position: absolute;
+  left: 222px;
+  top: 17px;
+  width: 700px;
+  height: 36px;
+  color: #111;
+  font-size: 31px;
+  line-height: 36px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.score-clock {
+  position: absolute;
+  right: 74px;
+  top: 17px;
+  width: 420px;
+  height: 36px;
+  text-align: right;
+  color: #111;
+  font-size: 31px;
+  line-height: 36px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.score-row {
+  position: absolute;
+  left: 68px;
+  width: 1220px;
+  height: 60px;
+  display: grid;
+  grid-template-columns: 72px 44px 61px 1fr 50px 16px 66px repeat(5, 46px);
+  column-gap: 10px;
+  align-items: center;
+}
+
+.score-row.home {
+  top: 71px;
+}
+
+.score-row.away {
+  top: 134px;
+}
+
+.country-code {
+  font-size: 31px;
+  font-weight: 500;
+  text-align: left;
+  line-height: 44px;
+}
+
+.serve-slot {
+  width: 44px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tennis-ball {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff67a 0 12%, #dfff24 34%, #a5c90b 100%);
+  box-shadow: 0 0 12px rgba(212, 255, 31, 0.8);
+  opacity: 0;
+  position: relative;
+}
+
+.tennis-ball::before,
+.tennis-ball::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-left: 0;
+  border-radius: 50%;
+  opacity: 0.9;
+}
+
+.tennis-ball::before {
+  left: 2px;
+  transform: rotate(24deg);
+}
+
+.tennis-ball::after {
+  right: 2px;
+  transform: rotate(204deg);
+}
+
+.score-row.serving .tennis-ball {
+  opacity: 1;
+}
+
+.player-photo {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--lime);
+  border: 4px solid var(--lime);
+}
+
+.score-name {
+  min-width: 0;
+  color: #000;
+  font-family: "Sofia Sans Condensed", Arial, sans-serif;
+  font-size: 43px;
+  line-height: 54px;
+  font-weight: 900;
+  font-style: italic;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-value {
+  width: 50px;
+  text-align: center;
+  color: #111;
+  font-size: 36px;
+  line-height: 48px;
+  font-weight: 700;
+}
+
+.live-separator {
+  width: 16px;
+  text-align: center;
+  color: #222;
+  font-size: 42px;
+  line-height: 48px;
+  font-weight: 600;
+}
+
+.set-cell {
+  position: relative;
+  width: 46px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #111;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.set-cell.winner {
+  color: #fff;
+  font-weight: 900;
+}
+
+.set-cell.winner::before {
+  content: "";
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--purple);
+  z-index: -1;
+}
+
+.set-cell.tie-break {
+  background: #dc203f;
+  color: #fff;
+  border-radius: 6px;
+  font-weight: 900;
+}
+
+.set-cell.tie-break::before {
+  display: none;
+}
+
+.ticker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 102px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 58% 58%, rgba(223, 255, 36, 0.95) 0 8%, rgba(223, 255, 36, 0.66) 13%, rgba(223, 255, 36, 0) 25%),
+    linear-gradient(103deg, #52219a 0%, #4a178a 36%, #6c38b5 45%, #dfff24 53%, #733abd 64%, #4a1784 82%, #260545 100%);
+}
+
+.ticker::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(9deg, rgba(255, 255, 255, 0.18) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(101deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 5px);
+  mix-blend-mode: screen;
+  opacity: 0.46;
+}
+
+.ticker::after {
+  content: "";
+  position: absolute;
+  left: 24px;
+  top: 12px;
+  z-index: 3;
+  width: 116px;
+  height: 78px;
+  background: url("/news-ticker-logo.png") left center / contain no-repeat;
+}
+
+.ticker-mask {
+  position: absolute;
+  left: 150px;
+  right: 0;
+  top: 0;
+  z-index: 2;
+  height: 102px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, transparent 10px, #000 112px, #000 100%);
+  mask-image: linear-gradient(to right, transparent 0, transparent 10px, #000 112px, #000 100%);
+}
+
+.ticker-track {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 102px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  color: #fff;
+  font-family: "Sofia Sans Condensed", Arial, sans-serif;
+  font-size: 42px;
+  line-height: 102px;
+  font-weight: 900;
+  font-style: italic;
+  text-transform: uppercase;
+  text-shadow: 0 2px 2px rgba(0, 0, 0, 0.18);
+  will-change: transform;
+  animation: none;
+}
+
+.ticker-cta {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  color: #fff;
+  text-transform: uppercase;
+  text-shadow: 0 2px 2px rgba(0, 0, 0, 0.24);
+  font-family: "Sofia Sans Condensed", Arial, sans-serif;
+  pointer-events: none;
+}
+
+.ticker-cta[hidden] {
+  display: none;
+}
+
+.ticker-cta-text {
+  font-size: 52px;
+  line-height: 1;
+  font-weight: 900;
+  font-style: italic;
+}
+
+.ticker-cta-arrow {
+  color: var(--lime);
+  font-size: 64px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.guides .left-panel,
+.guides .video-zone,
+.guides .score-strip,
+.guides .ticker {
+  outline: 2px solid rgba(202, 255, 61, 0.8);
+}
+
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(var(--ticker-start, 1808px));
+  }
+
+  to {
+    transform: translateX(-100%);
+  }
+}

@@ -9,17 +9,13 @@
 <body>
 <main id="overlay" class="overlay">
   <section class="left-panel" aria-label="Статистика матча">
-    <div class="promo-art">
-      <div class="promo-title-main">ВСЕ ДОРОГИ ВЕДУТ В ПАРИЖ</div>
-      <div class="promo-pill">РОЛАН ГАРРОС-2026 НА <b>БОЛЬШЕ!</b></div>
-    </div>
+    <div class="promo-art"><img src="/assets/promo-top-left.jpg" alt=""></div>
     <div class="stats-title">СТАТИСТИКА МАТЧА</div>
     <div class="stats-head">
       <div id="statHomeCode" class="team-code">---</div>
       <div id="statAwayCode" class="team-code">---</div>
     </div>
     <div id="statsGrid" class="stats-grid"></div>
-    <div id="statTime" class="stats-time">ВРЕМЯ МАТЧА --:--</div>
     <div class="odds-panel">
       <div class="odds-title">КОЭФФИЦИЕНТЫ WINLINE</div>
       <div class="odds-values">
@@ -32,14 +28,17 @@
   <section class="video-zone" aria-label="Зона видео"></section>
 
   <section class="score-strip" aria-label="Счет матча">
-    <div id="scoreTournament" class="score-tournament">РОЛАН ГАРРОС | МУЖЧИНЫ ПЕРВЫЙ КРУГ</div>
-    <div id="scoreClock" class="score-clock">СКОРО</div>
+    <div id="scoreTournament" class="score-tournament">FRENCH OPEN | МУЖЧИНЫ | ПЕРВЫЙ КРУГ</div>
+    <div id="scoreClock" class="score-clock">ВРЕМЯ МАТЧА | --:--</div>
 
     <div id="scoreHome" class="score-row home">
       <div id="homeCountry" class="country-code">---</div>
       <div class="serve-slot"><span class="tennis-ball"></span></div>
       <img id="homePhoto" class="player-photo" alt="">
       <div id="homeScoreName" class="score-name">ИГРОК 1</div>
+      <div id="homeLiveGames" class="live-value">0</div>
+      <div class="live-separator">|</div>
+      <div id="homeLivePoints" class="live-value">0</div>
       <div id="homeSet1" class="set-cell"></div>
       <div id="homeSet2" class="set-cell"></div>
       <div id="homeSet3" class="set-cell"></div>
@@ -52,6 +51,9 @@
       <div class="serve-slot"><span class="tennis-ball"></span></div>
       <img id="awayPhoto" class="player-photo" alt="">
       <div id="awayScoreName" class="score-name">ИГРОК 2</div>
+      <div id="awayLiveGames" class="live-value">0</div>
+      <div class="live-separator">|</div>
+      <div id="awayLivePoints" class="live-value">0</div>
       <div id="awaySet1" class="set-cell"></div>
       <div id="awaySet2" class="set-cell"></div>
       <div id="awaySet3" class="set-cell"></div>
@@ -61,8 +63,12 @@
   </section>
 
   <section class="ticker" aria-label="Новости">
-    <div class="ticker-logo" aria-hidden="true"><span></span></div>
     <div class="ticker-mask"><div id="tickerTrack" class="ticker-track">Загружаем новости...</div></div>
+    <div id="tickerCta" class="ticker-cta" hidden>
+      <span class="ticker-cta-arrow">↓</span>
+      <span class="ticker-cta-text">СМОТРИ ТРАНСЛЯЦИЮ ПО ССЫЛКЕ</span>
+      <span class="ticker-cta-arrow">↓</span>
+    </div>
   </section>
 </main>
 <script src="/overlay.js"></script>

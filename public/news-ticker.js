@@ -1,5 +1,6 @@
 const params = new URLSearchParams(window.location.search);
-const TICKER_SPEEDS = { slow: 26, normal: 36, fast: 52 };
+
+const TICKER_SPEEDS = { slow: 60, normal: 100, fast: 130 };
 const TICKER_HEIGHTS = {
   small: { height: 51, fontSize: 32, logoLeft: 16, logoTop: 6, logoWidth: 58, logoHeight: 39, safeLeft: 92, fadeWidth: 64 },
   normal: { height: 102, fontSize: 42, logoLeft: 24, logoTop: 18, logoWidth: 116, logoHeight: 78, safeLeft: 150, fadeWidth: 112 },
@@ -7,10 +8,11 @@ const TICKER_HEIGHTS = {
 };
 const DEFAULT_TICKER_HEIGHT = 102;
 const DEFAULT_LOGO_ASPECT = 116 / 78;
+const TICKER_CTA_HOLD_MS = 60_000;
 
 const config = {
   news: params.get("news") || "/api/news/tennis",
-  ticker: params.get("ticker") || params.get("speed") || "slow",
+  ticker: params.get("ticker") || params.get("speed") || "100",
   height: params.get("height") || params.get("size") || params.get("tickerHeight") || "normal",
   refresh: Number(params.get("refresh") || 60000),
   limit: Math.min(Math.max(Number(params.get("limit") || 15), 1), 15)
@@ -18,14 +20,16 @@ const config = {
 
 const refs = {
   mask: document.querySelector(".ticker-mask"),
-  track: document.querySelector("#tickerTrack")
+  track: document.querySelector("#tickerTrack"),
+  cta: document.querySelector("#tickerCta")
 };
 
-let activeNewsText = "Загружаем новости...";
-let queuedNewsText = "";
+let activeNewsItems = ["Загружаем новости..."];
+let queuedNewsItems = [];
 let tickerStarted = false;
+let tickerIndex = 0;
+let ctaTimer = null;
 let fetchInFlight = null;
-let switchingCycle = false;
 
 function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -35,7 +39,7 @@ function tickerSpeed() {
   const configured = TICKER_SPEEDS[config.ticker];
   if (Number.isFinite(configured)) return configured;
   const numeric = Number(config.ticker);
-  return Number.isFinite(numeric) && numeric > 0 ? Math.min(Math.max(numeric, 12), 90) : TICKER_SPEEDS.slow;
+  return Number.isFinite(numeric) && numeric > 0 ? Math.min(Math.max(numeric, 12), 220) : 100;
 }
 
 function tickerHeightConfig() {
@@ -65,57 +69,84 @@ function tickerHeightConfig() {
 function applyTickerHeight() {
   const size = tickerHeightConfig();
   const root = document.documentElement;
-  root.style.setProperty("--ticker-height", size.height + "px");
-  root.style.setProperty("--ticker-font-size", size.fontSize + "px");
-  root.style.setProperty("--ticker-logo-left", size.logoLeft + "px");
-  root.style.setProperty("--ticker-logo-top", size.logoTop + "px");
-  root.style.setProperty("--ticker-logo-width", size.logoWidth + "px");
-  root.style.setProperty("--ticker-logo-height", size.logoHeight + "px");
-  root.style.setProperty("--ticker-safe-left", size.safeLeft + "px");
-  root.style.setProperty("--ticker-fade-width", size.fadeWidth + "px");
+  root.style.setProperty("--ticker-height", `${size.height}px`);
+  root.style.setProperty("--ticker-font-size", `${size.fontSize}px`);
+  root.style.setProperty("--ticker-logo-left", `${size.logoLeft}px`);
+  root.style.setProperty("--ticker-logo-top", `${size.logoTop}px`);
+  root.style.setProperty("--ticker-logo-width", `${size.logoWidth}px`);
+  root.style.setProperty("--ticker-logo-height", `${size.logoHeight}px`);
+  root.style.setProperty("--ticker-safe-left", `${size.safeLeft}px`);
+  root.style.setProperty("--ticker-fade-width", `${size.fadeWidth}px`);
+  root.style.setProperty("--ticker-cta-size", `${clampNumber(Math.round(size.fontSize * 1.25), 30, 64)}px`);
+  root.style.setProperty("--ticker-arrow-size", `${clampNumber(Math.round(size.fontSize * 1.5), 36, 84)}px`);
 }
 
-function newsTextFromPayload(payload) {
+function newsItemsFromPayload(payload) {
   const list = Array.isArray(payload) ? payload : payload.items || [];
-  return list
+  const items = list
     .map((item) => item.title || item)
     .filter(Boolean)
-    .slice(0, config.limit)
-    .join("   •   ") || "Новости временно недоступны";
+    .slice(0, config.limit);
+  return items.length ? items : ["Новости временно недоступны"];
 }
 
-async function fetchNewsText() {
+async function fetchNewsItems() {
   const response = await fetch(config.news, { cache: "no-store" });
-  if (!response.ok) throw new Error(response.status + " " + response.statusText);
-  return newsTextFromPayload(await response.json());
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return newsItemsFromPayload(await response.json());
 }
 
-function restartTicker() {
+function hideCta() {
+  refs.cta.hidden = true;
+}
+
+function showCta() {
   refs.track.style.animation = "none";
-  refs.track.textContent = activeNewsText;
+  refs.track.textContent = "";
+  refs.cta.hidden = false;
+}
+
+function restartTicker(text) {
+  hideCta();
+  refs.track.style.animation = "none";
+  refs.track.textContent = text;
   const maskWidth = refs.mask.clientWidth || 1770;
-  refs.track.style.setProperty("--ticker-start", maskWidth + "px");
+  refs.track.style.setProperty("--ticker-start", `${maskWidth}px`);
   const distance = maskWidth + (refs.track.scrollWidth || 1200);
-  const duration = Math.max(28, Math.round(distance / tickerSpeed()));
-  refs.track.style.setProperty("--ticker-duration", duration + "s");
+  const duration = Math.max(12, Math.round(distance / tickerSpeed()));
+  refs.track.style.setProperty("--ticker-duration", `${duration}s`);
   void refs.track.offsetWidth;
   refs.track.style.animation = "ticker-scroll var(--ticker-duration) linear 1";
 }
 
-function startTicker() {
+function startNewsCycle() {
+  tickerIndex = 0;
+  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+}
+
+function ensureTickerStarted() {
   if (tickerStarted) return;
   tickerStarted = true;
-  restartTicker();
+  startNewsCycle();
+}
+
+function queueNews(items) {
+  queuedNewsItems = items.slice();
+  if (!tickerStarted) {
+    activeNewsItems = queuedNewsItems.length ? queuedNewsItems.slice() : ["Новости временно недоступны"];
+    queuedNewsItems = [];
+    ensureTickerStarted();
+  }
 }
 
 async function queueNewsRefresh() {
   if (fetchInFlight) return fetchInFlight;
-  fetchInFlight = fetchNewsText()
-    .then((text) => {
-      queuedNewsText = text;
+  fetchInFlight = fetchNewsItems()
+    .then((items) => {
+      queueNews(items);
     })
     .catch(() => {
-      queuedNewsText = "Новости временно недоступны";
+      queueNews(["Новости временно недоступны"]);
     })
     .finally(() => {
       fetchInFlight = null;
@@ -123,42 +154,40 @@ async function queueNewsRefresh() {
   return fetchInFlight;
 }
 
-async function loadInitialNews() {
-  try {
-    activeNewsText = await fetchNewsText();
-  } catch (_error) {
-    activeNewsText = "Новости временно недоступны";
+function switchCycleAfterCta() {
+  ctaTimer = null;
+  if (queuedNewsItems.length) {
+    activeNewsItems = queuedNewsItems.slice();
+    queuedNewsItems = [];
   }
-  startTicker();
+  startNewsCycle();
   queueNewsRefresh();
 }
 
-async function switchToNextNewsCycle() {
-  if (switchingCycle) return;
-  switchingCycle = true;
-
-  if (queuedNewsText) {
-    activeNewsText = queuedNewsText;
-    queuedNewsText = "";
-  } else {
-    try {
-      activeNewsText = await fetchNewsText();
-    } catch (_error) {
-      activeNewsText = "Новости временно недоступны";
-    }
-  }
-
-  restartTicker();
-  switchingCycle = false;
-  queueNewsRefresh();
+function holdCta() {
+  showCta();
+  if (ctaTimer) clearTimeout(ctaTimer);
+  ctaTimer = setTimeout(switchCycleAfterCta, TICKER_CTA_HOLD_MS);
 }
 
-refs.track.addEventListener("animationend", switchToNextNewsCycle);
+function handleTickerEnd() {
+  if (ctaTimer) return;
+  if (tickerIndex < activeNewsItems.length - 1) {
+    tickerIndex += 1;
+    restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+    return;
+  }
+  holdCta();
+}
+
+refs.track.addEventListener("animationend", handleTickerEnd);
 
 window.addEventListener("resize", () => {
-  if (tickerStarted) restartTicker();
+  if (!tickerStarted) return;
+  if (ctaTimer) return;
+  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
 });
 
 applyTickerHeight();
-loadInitialNews();
-setInterval(queueNewsRefresh, Math.max(config.refresh, 10000));
+queueNewsRefresh();
+setInterval(queueNewsRefresh, Math.max(config.refresh, 10_000));

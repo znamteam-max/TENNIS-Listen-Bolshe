@@ -1,10 +1,46 @@
-
 const params = new URLSearchParams(window.location.search);
-const TICKER_CTA = "смотрите прямую трансляцию на Больше! в ВК, ссылка в описании";
-const TICKER_SPEEDS = { slow: 26, normal: 36, fast: 52 };
+
+const TICKER_SPEEDS = { slow: 60, normal: 100, fast: 130 };
+const TICKER_CTA_HOLD_MS = 60_000;
 const COUNTRY_CODES = {
-  Argentina: "ARG", Australia: "AUS", Austria: "AUT", Belgium: "BEL", Brazil: "BRA", Bulgaria: "BUL", Canada: "CAN", Chile: "CHI", China: "CHN", Croatia: "CRO", Czechia: "CZE", Denmark: "DEN", France: "FRA", Germany: "GER", Greece: "GRE", Hungary: "HUN", Italy: "ITA", Japan: "JPN", Kazakhstan: "KAZ", Netherlands: "NED", Norway: "NOR", Poland: "POL", Portugal: "POR", Romania: "ROU", Russia: "RUS", Serbia: "SRB", Slovakia: "SVK", Slovenia: "SLO", Spain: "ESP", Sweden: "SWE", Switzerland: "SUI", Ukraine: "UKR", USA: "USA", "United States": "USA", "Great Britain": "GBR"
+  Argentina: "ARG",
+  Australia: "AUS",
+  Austria: "AUT",
+  Belgium: "BEL",
+  Brazil: "BRA",
+  Bulgaria: "BUL",
+  Canada: "CAN",
+  Chile: "CHI",
+  China: "CHN",
+  Croatia: "CRO",
+  Czechia: "CZE",
+  Denmark: "DEN",
+  France: "FRA",
+  Germany: "GER",
+  Greece: "GRE",
+  Hungary: "HUN",
+  Italy: "ITA",
+  Japan: "JPN",
+  Kazakhstan: "KAZ",
+  Netherlands: "NED",
+  Norway: "NOR",
+  Poland: "POL",
+  Portugal: "POR",
+  Romania: "ROU",
+  Russia: "RUS",
+  Serbia: "SRB",
+  Slovakia: "SVK",
+  Slovenia: "SLO",
+  Spain: "ESP",
+  Sweden: "SWE",
+  Switzerland: "SUI",
+  Ukraine: "UKR",
+  USA: "USA",
+  "United States": "USA",
+  "Great Britain": "GBR",
+  World: "---"
 };
+
 const STAT_ROWS = [
   { label: "ЭЙСЫ", sources: [["Service", "Aces"]] },
   { label: "ДВОЙНЫЕ\\nОШИБКИ", sources: [["Service", "Double Faults"]] },
@@ -14,20 +50,27 @@ const STAT_ROWS = [
   { label: "БРЕЙК-ПОИНТЫ", sources: [["Return", "Break Points Converted"], ["Service", "Break Points Saved"]] },
   { label: "РОЗЫГРЫШИ\\nПОД ДАВЛЕНИЕМ", sources: [["Points", "Last 10 balls"], ["Points", "Total Points Won"]] }
 ];
+
 const config = {
-  source: params.get("source") || "/api/match/flashscore?id=${DEFAULT_MATCH_ID}",
+  source: params.get("source") || "/api/match/flashscore?id=Sril3X2m",
   news: params.get("news") || "/api/news/tennis",
   odds: params.get("odds") || "",
-  ticker: params.get("ticker") || params.get("tickerSpeed") || "slow",
+  winline: params.get("winline") || "",
+  ticker: params.get("ticker") || params.get("tickerSpeed") || "100",
   poll: Number(params.get("poll") || 3000),
-  guides: params.get("guides") === "1"
+  guides: params.get("guides") === "1",
+  stage: params.get("stage") || "",
+  homeName: params.get("homeName") || "",
+  awayName: params.get("awayName") || "",
+  homeCode: params.get("homeCode") || "",
+  awayCode: params.get("awayCode") || ""
 };
+
 const refs = {
   overlay: document.querySelector("#overlay"),
   statsGrid: document.querySelector("#statsGrid"),
   statHomeCode: document.querySelector("#statHomeCode"),
   statAwayCode: document.querySelector("#statAwayCode"),
-  statTime: document.querySelector("#statTime"),
   scoreTournament: document.querySelector("#scoreTournament"),
   scoreClock: document.querySelector("#scoreClock"),
   scoreHome: document.querySelector("#scoreHome"),
@@ -38,65 +81,163 @@ const refs = {
   awayPhoto: document.querySelector("#awayPhoto"),
   homeScoreName: document.querySelector("#homeScoreName"),
   awayScoreName: document.querySelector("#awayScoreName"),
+  homeLiveGames: document.querySelector("#homeLiveGames"),
+  awayLiveGames: document.querySelector("#awayLiveGames"),
+  homeLivePoints: document.querySelector("#homeLivePoints"),
+  awayLivePoints: document.querySelector("#awayLivePoints"),
   homeOdds: document.querySelector("#homeOdds"),
   awayOdds: document.querySelector("#awayOdds"),
   tickerMask: document.querySelector(".ticker-mask"),
-  tickerTrack: document.querySelector("#tickerTrack")
+  tickerTrack: document.querySelector("#tickerTrack"),
+  tickerCta: document.querySelector("#tickerCta")
 };
+
 let lastMatchData = null;
-let newsTickerText = "Загружаем новости...";
-let tickerMode = "news";
+let activeNewsItems = ["Загружаем новости..."];
+let queuedNewsItems = [];
 let tickerStarted = false;
+let tickerIndex = 0;
+let ctaTimer = null;
+let newsFetchInFlight = null;
 
 function asText(value, fallback) {
   return value === null || value === undefined || value === "" ? fallback : String(value);
 }
 
 function fetchJson(url) {
-  return fetch(url, { cache: "no-store" }).then(function(response) {
-    if (!response.ok) throw new Error(response.status + " " + response.statusText);
+  return fetch(url, { cache: "no-store" }).then((response) => {
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.json();
   });
 }
 
 function statHtml() {
-  return STAT_ROWS.map(function(row) {
-    return '<div class="stat-row-template"><div class="stat-cell" data-stat-home="' + row.label.replace(/\\n/g, " ") + '"></div><div class="stat-label">' + row.label.replace(/\\n/g, "<br>") + '</div><div class="stat-cell" data-stat-away="' + row.label.replace(/\\n/g, " ") + '"></div></div>';
-  }).join("");
-}
-
-function codeFromName(name) {
-  const cleaned = String(name || "").replace(/\\([^)]*\\)/g, "").trim();
-  const last = cleaned.split(/\\s+/).filter(Boolean).pop() || cleaned;
-  return last.slice(0, 3).toUpperCase();
-}
-
-function countryCode(country) {
-  return COUNTRY_CODES[country] || String(country || "---").slice(0, 3).toUpperCase();
-}
-
-function surname(name) {
-  const parts = String(name || "").trim().split(/\\s+/).filter(Boolean);
-  return (parts.pop() || name || "ИГРОК").toUpperCase();
+  return STAT_ROWS.map((row) => (
+    `<div class="stat-row-template"><div class="stat-cell" data-stat-home="${row.label.replace(/\\n/g, " ")}"></div><div class="stat-label">${row.label.replace(/\\n/g, "<br>")}</div><div class="stat-cell" data-stat-away="${row.label.replace(/\\n/g, " ")}"></div></div>`
+  )).join("");
 }
 
 function normalize(value) {
   return String(value || "").toLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
 }
 
+function normalizeRu(value) {
+  return String(value || "").toLowerCase().replace(/ё/g, "е");
+}
+
+function hasCyrillic(value) {
+  return /[а-яё]/i.test(String(value || ""));
+}
+
+function transliterateWord(word) {
+  const source = normalizeRu(word);
+  if (!source) return "";
+
+  const digraphs = [
+    ["shch", "щ"],
+    ["sch", "щ"],
+    ["yo", "ё"],
+    ["yu", "ю"],
+    ["ya", "я"],
+    ["ye", "е"],
+    ["zh", "ж"],
+    ["kh", "х"],
+    ["ts", "ц"],
+    ["ch", "ч"],
+    ["sh", "ш"],
+    ["ph", "ф"],
+    ["th", "т"]
+  ];
+  const letters = {
+    a: "а",
+    b: "б",
+    c: "к",
+    d: "д",
+    e: "е",
+    f: "ф",
+    g: "г",
+    h: "х",
+    i: "и",
+    j: "дж",
+    k: "к",
+    l: "л",
+    m: "м",
+    n: "н",
+    o: "о",
+    p: "п",
+    q: "к",
+    r: "р",
+    s: "с",
+    t: "т",
+    u: "у",
+    v: "в",
+    w: "в",
+    x: "кс",
+    y: "й",
+    z: "з",
+    "'": "",
+    "’": ""
+  };
+
+  let result = source;
+  for (const [from, to] of digraphs) {
+    result = result.replaceAll(from, to);
+  }
+
+  let out = "";
+  for (const char of result) {
+    out += letters[char] !== undefined ? letters[char] : char;
+  }
+  return out.replace(/[^а-яё-]/gi, "");
+}
+
+function russianParts(name) {
+  const cleaned = String(name || "").replace(/\([^)]*\)/g, "").trim();
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (!parts.length) return { first: "", last: "ИГРОК" };
+  if (parts.length === 1) return { first: "", last: parts[0] };
+  return { first: parts.slice(0, -1).join(" "), last: parts.at(-1) || "" };
+}
+
+function firstInitial(firstName) {
+  const chunks = String(firstName || "").split("-").filter(Boolean);
+  if (!chunks.length) return "";
+  return chunks.map((chunk) => chunk[0]).filter(Boolean).join("-");
+}
+
+function toRussianDisplayName(name, fallback = "ИГРОК") {
+  const { first, last } = russianParts(name);
+  const firstRu = hasCyrillic(first) ? first : transliterateWord(first);
+  const lastRu = hasCyrillic(last) ? last : transliterateWord(last);
+  const lastText = (lastRu || fallback).toUpperCase();
+  const initials = firstInitial(firstRu).toUpperCase();
+  return initials ? `${initials}. ${lastText}` : lastText;
+}
+
+function toRussianCode(name, fallback = "---") {
+  const { last } = russianParts(name);
+  const lastRu = hasCyrillic(last) ? last : transliterateWord(last);
+  const letters = (lastRu || "").replace(/[^а-яё]/gi, "").toUpperCase();
+  return letters ? letters.slice(0, 3).padEnd(3, letters.at(-1) || " ") : fallback;
+}
+
+function countryCode(country) {
+  return COUNTRY_CODES[country] || String(country || "---").slice(0, 3).toUpperCase();
+}
+
 function findStat(stats, sources) {
   for (const source of sources) {
     const wantedSection = normalize(source[0]);
     const wantedLabel = normalize(source[1]);
-    const section = (stats || []).find(function(item) { return normalize(item.section) === wantedSection; });
-    const row = section?.rows?.find(function(item) { return normalize(item.label) === wantedLabel; });
+    const section = (stats || []).find((item) => normalize(item.section) === wantedSection);
+    const row = section?.rows?.find((item) => normalize(item.label) === wantedLabel);
     if (row) return row;
   }
   return { home: "", away: "" };
 }
 
 function fillStats(stats) {
-  STAT_ROWS.forEach(function(row, index) {
+  STAT_ROWS.forEach((row, index) => {
     const stat = findStat(stats, row.sources);
     const host = refs.statsGrid.children[index];
     if (!host) return;
@@ -105,47 +246,90 @@ function fillStats(stats) {
   });
 }
 
-function formatTournament(match) {
-  const raw = String(match?.tournament || match?.stage || "Live tennis");
-  const afterColon = raw.includes(":") ? raw.split(":").slice(1).join(":") : raw;
-  const city = afterColon.split("(")[0].split("-")[0].replace(/,/g, "").trim() || "ТЕННИС";
-  const gender = /WTA|WOMEN|ЖЕН/i.test(raw) ? "ЖЕНЩИНЫ" : "МУЖЧИНЫ";
-  const stageRaw = afterColon.split("-").pop()?.trim() || match?.stage || "";
-  const stage = translateStage(stageRaw);
-  return (city + " | " + gender + (stage ? " " + stage : "")).toUpperCase();
+function cleanTournamentName(raw) {
+  const value = String(raw || "Tennis");
+  const afterColon = value.includes(":") ? value.split(":").slice(1).join(":") : value;
+  const beforeStage = afterColon.split(" - ")[0] || afterColon;
+  return beforeStage.split("(")[0].split(",")[0].trim() || "TENNIS";
 }
 
 function translateStage(stage) {
-  const value = String(stage || "").toLowerCase();
-  if (value.includes("final")) return "ФИНАЛ";
+  const value = normalizeRu(stage);
+  if (!value) return "";
+  if (/1\/64|128|1st round|first round|1 round/i.test(value)) return "ПЕРВЫЙ КРУГ";
+  if (/1\/32|64|2nd round|second round|2 round/i.test(value)) return "ВТОРОЙ КРУГ";
+  if (/1\/16|32|3rd round|third round|3 round/i.test(value)) return "ТРЕТИЙ КРУГ";
+  if (/1\/8|16|4th round|fourth round|4 round/i.test(value)) return "1/8 ФИНАЛА";
+  if (value.includes("quarter")) return "1/4 ФИНАЛА";
   if (value.includes("semi")) return "ПОЛУФИНАЛ";
-  if (value.includes("quarter")) return "ЧЕТВЕРТЬФИНАЛ";
-  if (value.includes("round") || value.includes("1/")) return "ПЕРВЫЙ КРУГ";
-  return String(stage || "").replace(/set \\d+/i, "").trim().toUpperCase();
+  if (value.includes("final")) return "ФИНАЛ";
+  return String(stage || "").replace(/set \d+/i, "").replace(/\s+/g, " ").trim().toUpperCase();
+}
+
+function extractStage(match) {
+  const rawTournament = String(match?.tournament || "");
+  const fromTournament = rawTournament.includes(" - ")
+    ? rawTournament.split(" - ").at(-1)
+    : "";
+  const fallback = match?.stage || "";
+  return translateStage(fromTournament || fallback);
+}
+
+function formatTournament(match) {
+  const tournament = cleanTournamentName(match?.tournament);
+  const gender = /WTA|WOMEN|ЖЕН/i.test(String(match?.tournament || "")) ? "ЖЕНЩИНЫ" : "МУЖЧИНЫ";
+  const stage = (config.stage || extractStage(match) || "МАТЧ").toUpperCase();
+  return `${tournament.toUpperCase()} | ${gender} | ${stage}`;
+}
+
+function setWinner(set) {
+  if (set?.winner === "home" || set?.winner === "away") return set.winner;
+  const home = Number(set?.homeGames);
+  const away = Number(set?.awayGames);
+  if (!Number.isFinite(home) || !Number.isFinite(away) || home === away) return "";
+  return home > away ? "home" : "away";
 }
 
 function renderSets(data) {
   const sets = data.score?.sets || [];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 5; i += 1) {
     const set = sets[i] || {};
-    const home = document.querySelector("#homeSet" + (i + 1));
-    const away = document.querySelector("#awaySet" + (i + 1));
+    const home = document.querySelector(`#homeSet${i + 1}`);
+    const away = document.querySelector(`#awaySet${i + 1}`);
     home.textContent = asText(set.homeGames, "");
     away.textContent = asText(set.awayGames, "");
+
+    home.classList.remove("tie-break", "winner");
+    away.classList.remove("tie-break", "winner");
+
     const tieBreak = Boolean(set.tieBreak) || (String(set.homeGames) === "6" && String(set.awayGames) === "6");
-    home.classList.toggle("tie-break", tieBreak);
-    away.classList.toggle("tie-break", tieBreak);
+    if (tieBreak) {
+      home.classList.add("tie-break");
+      away.classList.add("tie-break");
+      continue;
+    }
+
+    const winner = setWinner(set);
+    if (winner === "home") home.classList.add("winner");
+    if (winner === "away") away.classList.add("winner");
   }
 }
 
+function formatPoint(value) {
+  const point = String(value || "").trim().toUpperCase();
+  return point || "-";
+}
+
 function renderPlayer(side, player) {
-  const home = side === "home";
-  const row = home ? refs.scoreHome : refs.scoreAway;
-  const photo = home ? refs.homePhoto : refs.awayPhoto;
-  const country = home ? refs.homeCountry : refs.awayCountry;
-  const scoreName = home ? refs.homeScoreName : refs.awayScoreName;
+  const isHome = side === "home";
+  const row = isHome ? refs.scoreHome : refs.scoreAway;
+  const photo = isHome ? refs.homePhoto : refs.awayPhoto;
+  const country = isHome ? refs.homeCountry : refs.awayCountry;
+  const scoreName = isHome ? refs.homeScoreName : refs.awayScoreName;
+  const forcedName = isHome ? config.homeName : config.awayName;
+
   country.textContent = countryCode(player.country);
-  scoreName.textContent = surname(player.name || player.shortName);
+  scoreName.textContent = toRussianDisplayName(forcedName || player.name || player.shortName);
   photo.src = player.image || "";
   photo.alt = player.name || "";
   row.classList.toggle("serving", Boolean(player.isServing));
@@ -153,14 +337,23 @@ function renderPlayer(side, player) {
 
 function renderMatch(data) {
   lastMatchData = data;
-  const home = data.players?.find(function(player) { return player.side === "home"; }) || data.players?.[0] || {};
-  const away = data.players?.find(function(player) { return player.side === "away"; }) || data.players?.[1] || {};
-  refs.statHomeCode.textContent = codeFromName(home.name || home.shortName);
-  refs.statAwayCode.textContent = codeFromName(away.name || away.shortName);
+  const home = data.players?.find((player) => player.side === "home") || data.players?.[0] || {};
+  const away = data.players?.find((player) => player.side === "away") || data.players?.[1] || {};
+
+  refs.statHomeCode.textContent = (config.homeCode || toRussianCode(config.homeName || home.name || home.shortName)).toUpperCase();
+  refs.statAwayCode.textContent = (config.awayCode || toRussianCode(config.awayName || away.name || away.shortName)).toUpperCase();
   refs.scoreTournament.textContent = formatTournament(data.match);
+
   const duration = data.match?.duration || "";
-  refs.scoreClock.textContent = data.match?.status === "live" && duration ? duration : "СКОРО";
-  refs.statTime.textContent = duration ? "ВРЕМЯ МАТЧА " + duration : "ВРЕМЯ МАТЧА --:--";
+  refs.scoreClock.textContent = data.match?.status === "live" && duration
+    ? `ВРЕМЯ МАТЧА | ${duration}`
+    : "СКОРО";
+
+  refs.homeLiveGames.textContent = asText(data.score?.games?.home, "-");
+  refs.awayLiveGames.textContent = asText(data.score?.games?.away, "-");
+  refs.homeLivePoints.textContent = formatPoint(data.score?.current?.home);
+  refs.awayLivePoints.textContent = formatPoint(data.score?.current?.away);
+
   renderPlayer("home", home);
   renderPlayer("away", away);
   renderSets(data);
@@ -171,44 +364,111 @@ function tickerSpeed() {
   const configured = TICKER_SPEEDS[config.ticker];
   if (Number.isFinite(configured)) return configured;
   const numeric = Number(config.ticker);
-  return Number.isFinite(numeric) && numeric > 0 ? Math.min(Math.max(numeric, 12), 90) : TICKER_SPEEDS.slow;
+  return Number.isFinite(numeric) && numeric > 0 ? Math.min(Math.max(numeric, 12), 220) : 100;
 }
 
-function tickerText() {
-  return tickerMode === "cta" ? TICKER_CTA : newsTickerText;
-}
-
-function restartTicker() {
+function showTickerCta() {
   refs.tickerTrack.style.animation = "none";
-  refs.tickerTrack.textContent = tickerText();
-  const maskWidth = refs.tickerMask.clientWidth || 1808;
-  refs.tickerTrack.style.setProperty("--ticker-start", maskWidth + "px");
+  refs.tickerTrack.textContent = "";
+  refs.tickerCta.hidden = false;
+}
+
+function hideTickerCta() {
+  refs.tickerCta.hidden = true;
+}
+
+function restartTicker(text) {
+  hideTickerCta();
+  refs.tickerTrack.style.animation = "none";
+  refs.tickerTrack.textContent = text;
+  const maskWidth = refs.tickerMask.clientWidth || 1770;
+  refs.tickerTrack.style.setProperty("--ticker-start", `${maskWidth}px`);
   const distance = maskWidth + (refs.tickerTrack.scrollWidth || 1200);
-  const duration = Math.max(26, Math.round(distance / tickerSpeed()));
-  refs.tickerTrack.style.setProperty("--ticker-duration", duration + "s");
+  const duration = Math.max(12, Math.round(distance / tickerSpeed()));
+  refs.tickerTrack.style.setProperty("--ticker-duration", `${duration}s`);
   void refs.tickerTrack.offsetWidth;
-  refs.tickerTrack.style.animation = "ticker var(--ticker-duration) linear 1";
+  refs.tickerTrack.style.animation = "ticker-scroll var(--ticker-duration) linear 1";
+}
+
+function tickerItemsFromPayload(payload) {
+  const list = Array.isArray(payload) ? payload : payload.items || [];
+  const items = list.map((item) => (typeof item === "string" ? item : item.title)).filter(Boolean).slice(0, 15);
+  return items.length ? items : ["Новости временно недоступны"];
+}
+
+function beginNewsCycle() {
+  tickerIndex = 0;
+  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
 }
 
 function ensureTickerStarted() {
   if (tickerStarted) return;
   tickerStarted = true;
-  tickerMode = "news";
-  restartTicker();
+  beginNewsCycle();
 }
 
-function renderNews(payload) {
-  const list = Array.isArray(payload) ? payload : payload.items || [];
-  newsTickerText = list.map(function(item) { return item.title || item; }).filter(Boolean).join("   •   ") || "Новости временно недоступны";
-  if (tickerMode === "news") restartTicker();
-  ensureTickerStarted();
+function queueNews(items) {
+  queuedNewsItems = items.slice();
+  if (!tickerStarted) {
+    activeNewsItems = queuedNewsItems.length ? queuedNewsItems.slice() : ["Новости временно недоступны"];
+    queuedNewsItems = [];
+    ensureTickerStarted();
+  }
+}
+
+async function queueNewsRefresh() {
+  if (newsFetchInFlight) return newsFetchInFlight;
+  newsFetchInFlight = fetchJson(config.news)
+    .then((payload) => {
+      queueNews(tickerItemsFromPayload(payload));
+    })
+    .catch(() => {
+      queueNews(["Новости временно недоступны"]);
+    })
+    .finally(() => {
+      newsFetchInFlight = null;
+    });
+  return newsFetchInFlight;
+}
+
+async function switchCycleAfterCta() {
+  if (queuedNewsItems.length) {
+    activeNewsItems = queuedNewsItems.slice();
+    queuedNewsItems = [];
+  }
+  beginNewsCycle();
+  queueNewsRefresh();
+}
+
+function holdCta() {
+  showTickerCta();
+  if (ctaTimer) clearTimeout(ctaTimer);
+  ctaTimer = setTimeout(() => {
+    ctaTimer = null;
+    switchCycleAfterCta();
+  }, TICKER_CTA_HOLD_MS);
+}
+
+function handleTickerEnd() {
+  if (ctaTimer) return;
+  if (tickerIndex < activeNewsItems.length - 1) {
+    tickerIndex += 1;
+    restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+    return;
+  }
+  holdCta();
 }
 
 function oddsUrl() {
   if (config.odds) return config.odds;
-  const home = lastMatchData?.players?.find(function(player) { return player.side === "home"; })?.name || "";
-  const away = lastMatchData?.players?.find(function(player) { return player.side === "away"; })?.name || "";
-  return "/api/odds/winline?home=" + encodeURIComponent(home) + "&away=" + encodeURIComponent(away);
+  const home = lastMatchData?.players?.find((player) => player.side === "home")?.name || "";
+  const away = lastMatchData?.players?.find((player) => player.side === "away")?.name || "";
+  const url = new URL("/api/odds/winline", window.location.origin);
+  url.searchParams.set("home", home);
+  url.searchParams.set("away", away);
+  if (config.winline) url.searchParams.set("matchUrl", config.winline);
+  if (lastMatchData?.source?.eventId) url.searchParams.set("eventId", lastMatchData.source.eventId);
+  return `${url.pathname}${url.search}`;
 }
 
 function renderOdds(payload) {
@@ -219,18 +479,8 @@ function renderOdds(payload) {
 async function refreshMatch() {
   try {
     renderMatch(await fetchJson(config.source));
-  } catch (error) {
-    refs.statTime.textContent = "ОШИБКА ДАННЫХ";
-  }
-}
-
-async function refreshNews() {
-  try {
-    renderNews(await fetchJson(config.news));
   } catch (_error) {
-    newsTickerText = "Новости временно недоступны";
-    if (tickerMode === "news") restartTicker();
-    ensureTickerStarted();
+    refs.scoreClock.textContent = "ОШИБКА ДАННЫХ";
   }
 }
 
@@ -244,16 +494,15 @@ async function refreshOdds() {
 
 refs.statsGrid.innerHTML = statHtml();
 refs.overlay.classList.toggle("guides", config.guides);
-refs.tickerTrack.addEventListener("animationend", function() {
-  tickerMode = tickerMode === "news" ? "cta" : "news";
-  restartTicker();
-});
-window.addEventListener("resize", function() {
-  if (tickerStarted) restartTicker();
+refs.tickerTrack.addEventListener("animationend", handleTickerEnd);
+window.addEventListener("resize", () => {
+  if (!tickerStarted) return;
+  if (ctaTimer) return;
+  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
 });
 
 refreshMatch().then(refreshOdds);
-refreshNews();
+queueNewsRefresh();
 setInterval(refreshMatch, Math.max(config.poll, 1000));
-setInterval(refreshNews, 60000);
-setInterval(refreshOdds, 60000);
+setInterval(queueNewsRefresh, 60_000);
+setInterval(refreshOdds, 60_000);
