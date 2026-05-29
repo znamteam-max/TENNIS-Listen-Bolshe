@@ -58,6 +58,8 @@ const STAGES = {
   "45": "To finish"
 };
 
+const overlayCustomBySession = new Map();
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -612,13 +614,15 @@ async function handleTelegramUpdate(update, env, origin) {
 
       const speedKey = TICKER_SPEEDS[parsed.speed] ? parsed.speed : "normal";
       const modeKey = MODE_LABELS[parsed.mode] ? parsed.mode : "stats";
-      const url = overlayPageUrl(origin, match, modeKey, speedKey, {
+      const custom = {
         homeName: parsed.homeName,
         awayName: parsed.awayName,
         homeCode: parsed.homeCode,
         awayCode: parsed.awayCode,
         stage: parsed.stage
-      });
+      };
+      setOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey, custom);
+      const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
       await telegramApi(env, "sendMessage", {
         chat_id: chatId,
         text: [
@@ -635,9 +639,85 @@ async function handleTelegramUpdate(update, env, origin) {
       return;
     }
 
+    if (command === "/edit_names" || command === "edit_names") {
+      const parsed = parseEditNamesCommand(textValue);
+      if (!parsed.ok) {
+        await telegramApi(env, "sendMessage", {
+          chat_id: chatId,
+          text: [
+            "Формат команды:",
+            "/edit_names <matchId> <program> <mode> <speed> <homeName> ; <awayName>",
+            "",
+            "Пример:",
+            "/edit_names WIzfqXXr obs stats normal Д. МЕДВЕДЕВ ; Х-М. СЕРУНДОЛО"
+          ].join("\n")
+        });
+        return;
+      }
+      await applyEditBlock(env, origin, chatId, parsed, "names");
+      return;
+    }
+
+    if (command === "/edit_countries" || command === "edit_countries") {
+      const parsed = parseEditCountriesCommand(textValue);
+      if (!parsed.ok) {
+        await telegramApi(env, "sendMessage", {
+          chat_id: chatId,
+          text: [
+            "Формат команды:",
+            "/edit_countries <matchId> <program> <mode> <speed> <homeCode> ; <awayCode>",
+            "",
+            "Пример:",
+            "/edit_countries WIzfqXXr obs stats normal BRA ; SRB"
+          ].join("\n")
+        });
+        return;
+      }
+      await applyEditBlock(env, origin, chatId, parsed, "countries");
+      return;
+    }
+
+    if (command === "/edit_stage" || command === "edit_stage") {
+      const parsed = parseEditStageCommand(textValue);
+      if (!parsed.ok) {
+        await telegramApi(env, "sendMessage", {
+          chat_id: chatId,
+          text: [
+            "Формат команды:",
+            "/edit_stage <matchId> <program> <mode> <speed> <stage>",
+            "",
+            "Пример:",
+            "/edit_stage WIzfqXXr obs stats normal ТРЕТИЙ КРУГ"
+          ].join("\n")
+        });
+        return;
+      }
+      await applyEditBlock(env, origin, chatId, parsed, "stage");
+      return;
+    }
+
+    if (command === "/edit_odds" || command === "edit_odds") {
+      const parsed = parseEditOddsCommand(textValue);
+      if (!parsed.ok) {
+        await telegramApi(env, "sendMessage", {
+          chat_id: chatId,
+          text: [
+            "Формат команды:",
+            "/edit_odds <matchId> <program> <mode> <speed> <homeOdd> ; <awayOdd>",
+            "",
+            "Пример:",
+            "/edit_odds WIzfqXXr obs stats normal 1.74 ; 2.15"
+          ].join("\n")
+        });
+        return;
+      }
+      await applyEditBlock(env, origin, chatId, parsed, "odds");
+      return;
+    }
+
     await telegramApi(env, "sendMessage", {
       chat_id: chatId,
-      text: "Команды:\n/start - открыть live-меню\n/overlay - выбрать матч и получить URL для OBS, Streamlabs или vMix\n/names - кастомные русские подписи и стадия"
+      text: "Команды:\n/start - открыть live-меню\n/overlay - выбрать матч и получить URL для OBS, Streamlabs или vMix\n/names - задать все кастомные поля одной командой\n/edit_names - фамилии игроков\n/edit_countries - коды стран\n/edit_stage - стадия турнира\n/edit_odds - коэффициенты вручную"
     });
     return;
   }
@@ -750,11 +830,12 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       await answerCallback(env, callbackId, "Скорость не найдена", true);
       return;
     }
+    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
     await telegramApi(env, "editMessageText", {
       chat_id: chatId,
       message_id: messageId,
-      text: overlayInstructions(origin, match, program, mode, speed),
-      reply_markup: readyMenu(match, program, mode, speed),
+      text: overlayInstructions(origin, match, program, mode, speed, custom),
+      reply_markup: readyMenu(match, program, mode, speed, custom),
       disable_web_page_preview: true
     });
     await answerCallback(env, callbackId, "Готово");
@@ -764,6 +845,26 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
   if (data.startsWith("e|")) {
     const [, matchId, program, mode, speed] = data.split("|");
     const match = await findMatch(env, matchId);
+    if (match) {
+      await telegramApi(env, "editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text: editMenuText(match, program, mode, speed, getOverlayCustom(chatId, match.id, program, mode, speed)),
+        reply_markup: editBlocksMenu(match, program, mode, speed),
+        disable_web_page_preview: true
+      });
+      await answerCallback(env, callbackId);
+      return;
+    }
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      return;
+    }
+  }
+
+  if (data.startsWith("en|") || data.startsWith("ec|") || data.startsWith("es|") || data.startsWith("eo|")) {
+    const [block, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
     if (!match) {
       await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
       return;
@@ -771,16 +872,8 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     await telegramApi(env, "editMessageText", {
       chat_id: chatId,
       message_id: messageId,
-      text: [
-        "✍️ Кастомные подписи",
-        "",
-        "Отправь команду одним сообщением:",
-        `/names ${match.id} ${program} ${mode} ${speed} Д. МЕДВЕДЕВ ; Х-М. СЕРУНДОЛО ; МЕД ; СЕР ; ПЕРВЫЙ КРУГ`,
-        "",
-        "Формат:",
-        "/names <matchId> <program> <mode> <speed> <homeName> ; <awayName> ; <homeCode> ; <awayCode> ; <stage>"
-      ].join("\n"),
-      reply_markup: readyMenu(match, program, mode, speed),
+      text: editBlockPrompt(block, match, program, mode, speed, getOverlayCustom(chatId, match.id, program, mode, speed)),
+      reply_markup: editBlocksMenu(match, program, mode, speed),
       disable_web_page_preview: true
     });
     await answerCallback(env, callbackId);
@@ -869,7 +962,7 @@ function readyMenu(match, program, mode, speed) {
       button("Средне", `s|${match.id}|${program}|${mode}|normal`),
       button("Быстрее", `s|${match.id}|${program}|${mode}|fast`)
     ],
-    [button("Редактировать подписи", `e|${match.id}|${program}|${mode}|${speed}`)],
+    [button("Редактировать блоки", `e|${match.id}|${program}|${mode}|${speed}`)],
     [button("Другая программа", `m|${match.id}`)],
     [button("К live матчам", "live")]
   ]);
@@ -902,6 +995,213 @@ function parseNamesCommand(textValue) {
     awayCode: chunks[3],
     stage: chunks.slice(4).join("; ").trim()
   };
+}
+
+function parseEditCommand(textValue, commandName) {
+  const match = String(textValue || "").match(new RegExp(`^/?${commandName}(?:@listen_bolshe_bot)?\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+([\\s\\S]+)$`, "i"));
+  if (!match) return { ok: false };
+  const [, matchId, program, mode, speed, payload] = match;
+  return {
+    ok: true,
+    matchId,
+    program: String(program || "").toLowerCase(),
+    mode: String(mode || "").toLowerCase(),
+    speed: String(speed || "").toLowerCase(),
+    payload: String(payload || "").trim()
+  };
+}
+
+function parseEditNamesCommand(textValue) {
+  const parsed = parseEditCommand(textValue, "edit_names");
+  if (!parsed.ok) return parsed;
+  const chunks = parsed.payload.split(";").map((item) => item.trim()).filter(Boolean);
+  if (chunks.length < 2) return { ok: false };
+  return { ...parsed, homeName: chunks[0], awayName: chunks.slice(1).join("; ").trim() };
+}
+
+function parseEditCountriesCommand(textValue) {
+  const parsed = parseEditCommand(textValue, "edit_countries");
+  if (!parsed.ok) return parsed;
+  const chunks = parsed.payload.split(";").map((item) => item.trim()).filter(Boolean);
+  if (chunks.length < 2) return { ok: false };
+  return {
+    ...parsed,
+    homeCode: normalizeCountryCode(chunks[0]),
+    awayCode: normalizeCountryCode(chunks[1])
+  };
+}
+
+function parseEditStageCommand(textValue) {
+  const parsed = parseEditCommand(textValue, "edit_stage");
+  if (!parsed.ok || !parsed.payload) return { ok: false };
+  return { ...parsed, stage: normalizeFreeText(parsed.payload) };
+}
+
+function parseEditOddsCommand(textValue) {
+  const parsed = parseEditCommand(textValue, "edit_odds");
+  if (!parsed.ok) return parsed;
+  const chunks = parsed.payload.split(";").map((item) => item.trim()).filter(Boolean);
+  if (chunks.length < 2) return { ok: false };
+  const homeOdd = cleanOdd(chunks[0]);
+  const awayOdd = cleanOdd(chunks[1]);
+  if (!homeOdd || !awayOdd) return { ok: false };
+  return { ...parsed, homeOdd, awayOdd };
+}
+
+function overlaySessionKey(chatId, matchId, program, mode, speed) {
+  return [String(chatId || ""), String(matchId || ""), String(program || ""), String(mode || ""), String(speed || "")].join("|");
+}
+
+function getOverlayCustom(chatId, matchId, program, mode, speed) {
+  return overlayCustomBySession.get(overlaySessionKey(chatId, matchId, program, mode, speed)) || {};
+}
+
+function setOverlayCustom(chatId, matchId, program, mode, speed, patch) {
+  const key = overlaySessionKey(chatId, matchId, program, mode, speed);
+  const current = getOverlayCustom(chatId, matchId, program, mode, speed);
+  const next = { ...current, ...patch };
+  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "stage", "homeOdd", "awayOdd"]) {
+    if (!String(next[prop] ?? "").trim()) delete next[prop];
+  }
+  if (!Object.keys(next).length) {
+    overlayCustomBySession.delete(key);
+    return {};
+  }
+  overlayCustomBySession.set(key, next);
+  return next;
+}
+
+function normalizeCountryCode(value) {
+  return String(value || "").trim().toUpperCase().replace(/[^A-ZА-ЯЁ0-9]/gi, "").slice(0, 3);
+}
+
+function normalizeFreeText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function customSummaryLines(custom = {}) {
+  return [
+    `Фамилии: ${custom.homeName || "авто"} / ${custom.awayName || "авто"}`,
+    `Страны: ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
+    `Стадия: ${custom.stage || "авто"}`,
+    `Коэффициенты: ${custom.homeOdd || "авто"} / ${custom.awayOdd || "авто"}`
+  ];
+}
+
+function editMenuText(match, program, mode, speed, custom = {}) {
+  return [
+    "Редактирование по блокам",
+    "",
+    matchTitle(match),
+    `Программа: ${PROGRAM_LABELS[program] || program}`,
+    `Режим: ${MODE_LABELS[mode] || mode}`,
+    `Скорость строки: ${TICKER_SPEEDS[speed]?.label || speed}`,
+    "",
+    ...customSummaryLines(custom),
+    "",
+    "Выбери блок ниже и отправь только одну команду для него."
+  ].join("\n");
+}
+
+function editBlocksMenu(match, program, mode, speed) {
+  return keyboard([
+    [button("Фамилии", `en|${match.id}|${program}|${mode}|${speed}`), button("Страны", `ec|${match.id}|${program}|${mode}|${speed}`)],
+    [button("Стадия", `es|${match.id}|${program}|${mode}|${speed}`), button("Коэффициенты", `eo|${match.id}|${program}|${mode}|${speed}`)],
+    [button("Назад", `s|${match.id}|${program}|${mode}|${speed}`)],
+    [button("К live матчам", "live")]
+  ]);
+}
+
+function editBlockPrompt(block, match, program, mode, speed, custom = {}) {
+  const shared = `${match.id} ${program} ${mode} ${speed}`;
+  if (block === "en") {
+    return [
+      "Редактирование фамилий",
+      "",
+      ...customSummaryLines(custom),
+      "",
+      "Команда:",
+      `/edit_names ${shared} Д. МЕДВЕДЕВ ; Х-М. СЕРУНДОЛО`
+    ].join("\n");
+  }
+  if (block === "ec") {
+    return [
+      "Редактирование стран",
+      "",
+      ...customSummaryLines(custom),
+      "",
+      "Команда:",
+      `/edit_countries ${shared} BRA ; SRB`
+    ].join("\n");
+  }
+  if (block === "es") {
+    return [
+      "Редактирование стадии",
+      "",
+      ...customSummaryLines(custom),
+      "",
+      "Команда:",
+      `/edit_stage ${shared} ТРЕТИЙ КРУГ`
+    ].join("\n");
+  }
+  return [
+    "Редактирование коэффициентов",
+    "",
+    ...customSummaryLines(custom),
+    "",
+    "Команда:",
+    `/edit_odds ${shared} 1.74 ; 2.15`
+  ].join("\n");
+}
+
+async function applyEditBlock(env, origin, chatId, parsed, block) {
+  const match = await findMatch(env, parsed.matchId);
+  if (!match) {
+    await telegramApi(env, "sendMessage", {
+      chat_id: chatId,
+      text: "Матч не найден или уже исчез из live-списка. Выбери его заново через /start."
+    });
+    return;
+  }
+  if (!PROGRAM_LABELS[parsed.program]) {
+    await telegramApi(env, "sendMessage", {
+      chat_id: chatId,
+      text: "Неверная программа. Используй obs, streamlabs или vmix."
+    });
+    return;
+  }
+
+  const modeKey = MODE_LABELS[parsed.mode] ? parsed.mode : "stats";
+  const speedKey = TICKER_SPEEDS[parsed.speed] ? parsed.speed : "normal";
+  const patch = {};
+
+  if (block === "names") {
+    patch.homeName = normalizeFreeText(parsed.homeName);
+    patch.awayName = normalizeFreeText(parsed.awayName);
+  } else if (block === "countries") {
+    patch.homeCode = normalizeCountryCode(parsed.homeCode);
+    patch.awayCode = normalizeCountryCode(parsed.awayCode);
+  } else if (block === "stage") {
+    patch.stage = normalizeFreeText(parsed.stage);
+  } else if (block === "odds") {
+    patch.homeOdd = parsed.homeOdd;
+    patch.awayOdd = parsed.awayOdd;
+  }
+
+  const custom = setOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey, patch);
+  const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+  await telegramApi(env, "sendMessage", {
+    chat_id: chatId,
+    text: [
+      "Готово, блок обновлен.",
+      "",
+      `Матч: ${matchTitle(match)}`,
+      ...customSummaryLines(custom),
+      "",
+      `URL:\n${url}`
+    ].join("\n"),
+    disable_web_page_preview: true
+  });
 }
 
 async function liveMatches(env) {
@@ -1019,11 +1319,11 @@ function stageLabel(match) {
   return "Scheduled";
 }
 
-function overlayInstructions(origin, match, program, mode, speed) {
+function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
   const programKey = PROGRAM_LABELS[program] ? program : "obs";
   const modeKey = MODE_LABELS[mode] ? mode : "stats";
   const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
-  const url = overlayPageUrl(origin, match, modeKey, speedKey);
+  const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
   return [
     "🎾 Оверлей готов",
     "",
@@ -1054,8 +1354,10 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
     home: match.home?.name || "",
     away: match.away?.name || "",
     eventId: match.id || ""
-  }).toString();
-  const oddsSource = `/api/odds/winline?${oddsQuery}`;
+  });
+  if (custom.homeOdd) oddsQuery.set("homeOdd", custom.homeOdd);
+  if (custom.awayOdd) oddsQuery.set("awayOdd", custom.awayOdd);
+  const oddsSource = `/api/odds/winline?${oddsQuery.toString()}`;
   const tickerSpeed = TICKER_SPEEDS[speed]?.pixelsPerSecond || 100;
   const query = new URLSearchParams({
     source,
@@ -1070,6 +1372,8 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
   if (custom.homeCode) query.set("homeCode", custom.homeCode);
   if (custom.awayCode) query.set("awayCode", custom.awayCode);
   if (custom.stage) query.set("stage", custom.stage);
+  if (custom.homeOdd) query.set("homeOdd", custom.homeOdd);
+  if (custom.awayOdd) query.set("awayOdd", custom.awayOdd);
   return `${origin}/overlay.html?${query.toString()}`;
 }
 
@@ -1200,42 +1504,49 @@ function value(record, key, fallback = "") {
 
 function parseSummary(records) {
   const row = records.find((record) => record.AC && (record.IG || record.IH)) || {};
+  const totalDuration =
+    records.map((record) => value(record, "RB")).find(Boolean) ||
+    records.map((record) => value(record, "RC")).find(Boolean) ||
+    value(row, "RC", "");
   return {
     label: value(row, "AC"),
     homeGames: value(row, "IG"),
     awayGames: value(row, "IH"),
-    duration: value(row, "RC", records.find((record) => record.RB)?.RB || "")
+    duration: totalDuration
   };
 }
 
 function buildSetScores(history, summary, common) {
-  const setsByLabel = new Map();
+  const setsByNumber = new Map();
   for (const game of history.games || []) {
     const label = game.set || "Set 1";
-    setsByLabel.set(label, {
+    const number = setNumber(label, setsByNumber.size + 1);
+    setsByNumber.set(number, {
       label,
-      number: setNumber(label, setsByLabel.size + 1),
+      number,
       homeGames: game.homeGames,
       awayGames: game.awayGames,
       winner: game.winner || ""
     });
   }
 
-  const currentLabel = summary.label || [...setsByLabel.keys()].at(-1) || "Set 1";
-  const currentNumber = setNumber(currentLabel, setsByLabel.size || 1);
+  const existingNumbers = [...setsByNumber.keys()].filter((item) => Number.isFinite(item));
+  const fallbackNumber = existingNumbers.length ? Math.max(...existingNumbers) : 1;
+  const currentLabel = isSetLabel(summary.label) ? summary.label : `Set ${fallbackNumber}`;
+  const currentNumber = setNumber(currentLabel, fallbackNumber);
   const current = {
     label: currentLabel,
     number: currentNumber,
     homeGames: value(common, "DN", summary.homeGames),
     awayGames: value(common, "DO", summary.awayGames),
-    winner: ""
+    winner: setsByNumber.get(currentNumber)?.winner || ""
   };
 
   if (current.homeGames !== "" || current.awayGames !== "") {
-    setsByLabel.set(currentLabel, { ...(setsByLabel.get(currentLabel) || {}), ...current });
+    setsByNumber.set(currentNumber, { ...(setsByNumber.get(currentNumber) || {}), ...current });
   }
 
-  return [...setsByLabel.values()]
+  return [...setsByNumber.values()]
     .sort((a, b) => Number(a.number || 0) - Number(b.number || 0))
     .slice(0, 5)
     .map((set, index) => ({
@@ -1251,6 +1562,12 @@ function buildSetScores(history, summary, common) {
 function setNumber(label, fallback) {
   const number = String(label || "").match(/\d+/)?.[0];
   return number ? Number(number) : fallback;
+}
+
+function isSetLabel(label) {
+  const valueText = String(label || "").trim();
+  if (!valueText) return false;
+  return /^set\s*\d+/i.test(valueText) || /^\d+$/.test(valueText);
 }
 
 function inferServingSide(history) {
@@ -1443,7 +1760,7 @@ const OVERLAY_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tennis Overlay</title>
-<link rel="stylesheet" href="/overlay.css?v=20260529-2">
+<link rel="stylesheet" href="/overlay.css?v=20260529-3">
 </head>
 <body>
 <main id="overlay" class="overlay">
@@ -1475,9 +1792,8 @@ const OVERLAY_HTML = `<!doctype html>
       <div class="serve-slot"><span class="tennis-ball"></span></div>
       <img id="homePhoto" class="player-photo" alt="">
       <div id="homeScoreName" class="score-name">ИГРОК 1</div>
-      <div id="homeLiveGames" class="live-value">0</div>
-      <div class="live-separator">|</div>
       <div id="homeLivePoints" class="live-value">0</div>
+      <div class="live-separator">|</div>
       <div id="homeSet1" class="set-cell"></div>
       <div id="homeSet2" class="set-cell"></div>
       <div id="homeSet3" class="set-cell"></div>
@@ -1490,9 +1806,8 @@ const OVERLAY_HTML = `<!doctype html>
       <div class="serve-slot"><span class="tennis-ball"></span></div>
       <img id="awayPhoto" class="player-photo" alt="">
       <div id="awayScoreName" class="score-name">ИГРОК 2</div>
-      <div id="awayLiveGames" class="live-value">0</div>
-      <div class="live-separator">|</div>
       <div id="awayLivePoints" class="live-value">0</div>
+      <div class="live-separator">|</div>
       <div id="awaySet1" class="set-cell"></div>
       <div id="awaySet2" class="set-cell"></div>
       <div id="awaySet3" class="set-cell"></div>
@@ -1505,12 +1820,12 @@ const OVERLAY_HTML = `<!doctype html>
     <div class="ticker-mask"><div id="tickerTrack" class="ticker-track">Загружаем новости...</div></div>
     <div id="tickerCta" class="ticker-cta" hidden>
       <span class="ticker-cta-arrow">↓</span>
-      <span class="ticker-cta-text">СМОТРИ ТРАНСЛЯЦИЮ ПО ССЫЛКЕ</span>
+      <span class="ticker-cta-text">СМОТРЮ ПРЯМУЮ ТРАНСЛЯЦИЮ МАТЧА ПО ССЫЛКЕ</span>
       <span class="ticker-cta-arrow">↓</span>
     </div>
   </section>
 </main>
-<script src="/overlay.js?v=20260529-2"></script>
+<script src="/overlay.js?v=20260529-3"></script>
 </body>
 </html>
 `;
@@ -1732,9 +2047,9 @@ body {
 
 .score-tournament {
   position: absolute;
-  left: 222px;
+  left: 68px;
   top: 17px;
-  width: 700px;
+  width: 900px;
   height: 36px;
   color: #111;
   font-size: 31px;
@@ -1748,11 +2063,11 @@ body {
 
 .score-clock {
   position: absolute;
-  right: 74px;
+  left: 1008px;
   top: 17px;
-  width: 420px;
+  width: 320px;
   height: 36px;
-  text-align: right;
+  text-align: left;
   color: #111;
   font-size: 31px;
   line-height: 36px;
@@ -1766,7 +2081,7 @@ body {
   width: 1220px;
   height: 60px;
   display: grid;
-  grid-template-columns: 72px 44px 61px 1fr 50px 16px 66px repeat(5, 46px);
+  grid-template-columns: 72px 44px 61px 631px 66px 16px repeat(5, 46px);
   column-gap: 10px;
   align-items: center;
 }
@@ -1855,12 +2170,17 @@ body {
 }
 
 .live-value {
-  width: 50px;
+  width: 66px;
   text-align: center;
   color: #111;
   font-size: 36px;
   line-height: 48px;
   font-weight: 700;
+}
+
+.live-value.advantage {
+  font-style: italic;
+  font-weight: 900;
 }
 
 .live-separator {
@@ -1874,6 +2194,7 @@ body {
 
 .set-cell {
   position: relative;
+  isolation: isolate;
   width: 46px;
   height: 48px;
   display: flex;
@@ -2008,6 +2329,7 @@ const OVERLAY_JS = `const params = new URLSearchParams(window.location.search);
 
 const TICKER_SPEEDS = { slow: 60, normal: 100, fast: 130 };
 const TICKER_CTA_HOLD_MS = 60000;
+const TICKER_SEPARATOR = "   ✦   ";
 const COUNTRY_CODES = {
   Argentina: "ARG",
   Australia: "AUS",
@@ -2069,7 +2391,9 @@ const config = {
   homeName: params.get("homeName") || "",
   awayName: params.get("awayName") || "",
   homeCode: params.get("homeCode") || "",
-  awayCode: params.get("awayCode") || ""
+  awayCode: params.get("awayCode") || "",
+  homeOdd: params.get("homeOdd") || "",
+  awayOdd: params.get("awayOdd") || ""
 };
 
 const refs = {
@@ -2087,8 +2411,6 @@ const refs = {
   awayPhoto: document.querySelector("#awayPhoto"),
   homeScoreName: document.querySelector("#homeScoreName"),
   awayScoreName: document.querySelector("#awayScoreName"),
-  homeLiveGames: document.querySelector("#homeLiveGames"),
-  awayLiveGames: document.querySelector("#awayLiveGames"),
   homeLivePoints: document.querySelector("#homeLivePoints"),
   awayLivePoints: document.querySelector("#awayLivePoints"),
   homeOdds: document.querySelector("#homeOdds"),
@@ -2099,10 +2421,9 @@ const refs = {
 };
 
 let lastMatchData = null;
-let activeNewsItems = ["Загружаем новости..."];
-let queuedNewsItems = [];
+let activeTickerText = "Загружаем новости...";
+let queuedTickerText = "";
 let tickerStarted = false;
-let tickerIndex = 0;
 let ctaTimer = null;
 let newsFetchInFlight = null;
 
@@ -2325,7 +2646,45 @@ function renderSets(data) {
 
 function formatPoint(value) {
   const point = String(value || "").trim().toUpperCase();
-  return point || "-";
+  if (!point) return "-";
+  if (point === "A" || point === "AD") return "Б!";
+  if (point === "40A") return "Б!";
+  return point;
+}
+
+function parsePointPairFromCurrentGame(data) {
+  const point = String(data?.currentGame?.currentPoint || data?.currentGame?.points || "").trim();
+  if (!point) return null;
+  const parts = point.split(":").map((item) => item.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  return { home: parts[0], away: parts[1] };
+}
+
+function looksLikeGamePoint(value) {
+  const point = String(value ?? "").trim().toUpperCase();
+  if (!point) return false;
+  if (/^(0|15|30|40|A|AD|Б!)$/.test(point)) return true;
+  if (/^\\d{1,2}$/.test(point)) return Number(point) <= 99;
+  return false;
+}
+
+function resolveCurrentPoints(data) {
+  const fromGame = parsePointPairFromCurrentGame(data);
+  if (fromGame) return fromGame;
+
+  const raw = data?.score?.current || {};
+  const home = String(raw.home ?? "").trim();
+  const away = String(raw.away ?? "").trim();
+  if (looksLikeGamePoint(home) && looksLikeGamePoint(away)) {
+    return { home, away };
+  }
+  return { home: "-", away: "-" };
+}
+
+function renderLivePoint(element, value) {
+  const formatted = formatPoint(value);
+  element.textContent = formatted;
+  element.classList.toggle("advantage", formatted === "Б!");
 }
 
 function renderPlayer(side, player) {
@@ -2359,13 +2718,9 @@ function renderMatch(data) {
     ? \`ВРЕМЯ МАТЧА | \${duration}\`
     : "СКОРО";
 
-  const score = data && data.score ? data.score : {};
-  const games = score.games || {};
-  const current = score.current || {};
-  refs.homeLiveGames.textContent = asText(games.home, "-");
-  refs.awayLiveGames.textContent = asText(games.away, "-");
-  refs.homeLivePoints.textContent = formatPoint(current.home);
-  refs.awayLivePoints.textContent = formatPoint(current.away);
+  const current = resolveCurrentPoints(data || {});
+  renderLivePoint(refs.homeLivePoints, current.home);
+  renderLivePoint(refs.awayLivePoints, current.away);
 
   renderPlayer("home", home);
   renderPlayer("away", away);
@@ -2409,9 +2764,13 @@ function tickerItemsFromPayload(payload) {
   return items.length ? items : ["Новости временно недоступны"];
 }
 
+function tickerTextFromItems(items) {
+  const text = items.map((item) => String(item || "").trim()).filter(Boolean).join(TICKER_SEPARATOR);
+  return text || "Новости временно недоступны";
+}
+
 function beginNewsCycle() {
-  tickerIndex = 0;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 }
 
 function ensureTickerStarted() {
@@ -2421,10 +2780,10 @@ function ensureTickerStarted() {
 }
 
 function queueNews(items) {
-  queuedNewsItems = items.slice();
+  queuedTickerText = tickerTextFromItems(items);
   if (!tickerStarted) {
-    activeNewsItems = queuedNewsItems.length ? queuedNewsItems.slice() : ["Новости временно недоступны"];
-    queuedNewsItems = [];
+    activeTickerText = queuedTickerText || "Новости временно недоступны";
+    queuedTickerText = "";
     ensureTickerStarted();
   }
 }
@@ -2445,9 +2804,9 @@ async function queueNewsRefresh() {
 }
 
 async function switchCycleAfterCta() {
-  if (queuedNewsItems.length) {
-    activeNewsItems = queuedNewsItems.slice();
-    queuedNewsItems = [];
+  if (queuedTickerText) {
+    activeTickerText = queuedTickerText;
+    queuedTickerText = "";
   }
   beginNewsCycle();
   queueNewsRefresh();
@@ -2464,11 +2823,6 @@ function holdCta() {
 
 function handleTickerEnd() {
   if (ctaTimer) return;
-  if (tickerIndex < activeNewsItems.length - 1) {
-    tickerIndex += 1;
-    restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
-    return;
-  }
   holdCta();
 }
 
@@ -2483,6 +2837,8 @@ function oddsUrl() {
   url.searchParams.set("home", home);
   url.searchParams.set("away", away);
   if (config.winline) url.searchParams.set("matchUrl", config.winline);
+  if (config.homeOdd) url.searchParams.set("homeOdd", config.homeOdd);
+  if (config.awayOdd) url.searchParams.set("awayOdd", config.awayOdd);
   if (lastMatchData && lastMatchData.source && lastMatchData.source.eventId) {
     url.searchParams.set("eventId", lastMatchData.source.eventId);
   }
@@ -2517,7 +2873,7 @@ refs.tickerTrack.addEventListener("animationend", handleTickerEnd);
 window.addEventListener("resize", () => {
   if (!tickerStarted) return;
   if (ctaTimer) return;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 });
 
 refreshMatch().then(refreshOdds);
@@ -2533,7 +2889,7 @@ const NEWS_TICKER_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Больше! tennis news ticker</title>
-<link rel="stylesheet" href="/news-ticker.css?v=20260529-2">
+<link rel="stylesheet" href="/news-ticker.css?v=20260529-3">
 </head>
 <body>
 <main class="news-ticker-overlay" aria-label="Бегущая строка новостей">
@@ -2541,12 +2897,12 @@ const NEWS_TICKER_HTML = `<!doctype html>
     <div class="ticker-mask"><div id="tickerTrack" class="ticker-track">Загружаем новости...</div></div>
     <div id="tickerCta" class="ticker-cta" hidden>
       <span class="ticker-cta-arrow">↓</span>
-      <span class="ticker-cta-text">СМОТРИ ТРАНСЛЯЦИЮ ПО ССЫЛКЕ</span>
+      <span class="ticker-cta-text">СМОТРЮ ПРЯМУЮ ТРАНСЛЯЦИЮ МАТЧА ПО ССЫЛКЕ</span>
       <span class="ticker-cta-arrow">↓</span>
     </div>
   </section>
 </main>
-<script src="/news-ticker.js?v=20260529-2"></script>
+<script src="/news-ticker.js?v=20260529-3"></script>
 </body>
 </html>
 `;
@@ -2700,6 +3056,7 @@ const TICKER_HEIGHTS = {
 const DEFAULT_TICKER_HEIGHT = 102;
 const DEFAULT_LOGO_ASPECT = 116 / 78;
 const TICKER_CTA_HOLD_MS = 60000;
+const TICKER_SEPARATOR = "   ✦   ";
 
 const config = {
   news: params.get("news") || "/api/news/tennis",
@@ -2715,10 +3072,9 @@ const refs = {
   cta: document.querySelector("#tickerCta")
 };
 
-let activeNewsItems = ["Загружаем новости..."];
-let queuedNewsItems = [];
+let activeTickerText = "Загружаем новости...";
+let queuedTickerText = "";
 let tickerStarted = false;
-let tickerIndex = 0;
 let ctaTimer = null;
 let fetchInFlight = null;
 
@@ -2810,9 +3166,13 @@ function restartTicker(text) {
   refs.track.style.animation = "ticker-scroll var(--ticker-duration) linear 1";
 }
 
+function tickerTextFromItems(items) {
+  const text = items.map((item) => String(item || "").trim()).filter(Boolean).join(TICKER_SEPARATOR);
+  return text || "Новости временно недоступны";
+}
+
 function startNewsCycle() {
-  tickerIndex = 0;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 }
 
 function ensureTickerStarted() {
@@ -2822,10 +3182,10 @@ function ensureTickerStarted() {
 }
 
 function queueNews(items) {
-  queuedNewsItems = items.slice();
+  queuedTickerText = tickerTextFromItems(items);
   if (!tickerStarted) {
-    activeNewsItems = queuedNewsItems.length ? queuedNewsItems.slice() : ["Новости временно недоступны"];
-    queuedNewsItems = [];
+    activeTickerText = queuedTickerText || "Новости временно недоступны";
+    queuedTickerText = "";
     ensureTickerStarted();
   }
 }
@@ -2847,9 +3207,9 @@ async function queueNewsRefresh() {
 
 function switchCycleAfterCta() {
   ctaTimer = null;
-  if (queuedNewsItems.length) {
-    activeNewsItems = queuedNewsItems.slice();
-    queuedNewsItems = [];
+  if (queuedTickerText) {
+    activeTickerText = queuedTickerText;
+    queuedTickerText = "";
   }
   startNewsCycle();
   queueNewsRefresh();
@@ -2863,11 +3223,6 @@ function holdCta() {
 
 function handleTickerEnd() {
   if (ctaTimer) return;
-  if (tickerIndex < activeNewsItems.length - 1) {
-    tickerIndex += 1;
-    restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
-    return;
-  }
   holdCta();
 }
 
@@ -2876,7 +3231,7 @@ refs.track.addEventListener("animationend", handleTickerEnd);
 window.addEventListener("resize", () => {
   if (!tickerStarted) return;
   if (ctaTimer) return;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 });
 
 applyTickerHeight();

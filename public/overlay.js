@@ -2,6 +2,7 @@ const params = new URLSearchParams(window.location.search);
 
 const TICKER_SPEEDS = { slow: 60, normal: 100, fast: 130 };
 const TICKER_CTA_HOLD_MS = 60000;
+const TICKER_SEPARATOR = "   ✦   ";
 const COUNTRY_CODES = {
   Argentina: "ARG",
   Australia: "AUS",
@@ -63,7 +64,9 @@ const config = {
   homeName: params.get("homeName") || "",
   awayName: params.get("awayName") || "",
   homeCode: params.get("homeCode") || "",
-  awayCode: params.get("awayCode") || ""
+  awayCode: params.get("awayCode") || "",
+  homeOdd: params.get("homeOdd") || "",
+  awayOdd: params.get("awayOdd") || ""
 };
 
 const refs = {
@@ -81,8 +84,6 @@ const refs = {
   awayPhoto: document.querySelector("#awayPhoto"),
   homeScoreName: document.querySelector("#homeScoreName"),
   awayScoreName: document.querySelector("#awayScoreName"),
-  homeLiveGames: document.querySelector("#homeLiveGames"),
-  awayLiveGames: document.querySelector("#awayLiveGames"),
   homeLivePoints: document.querySelector("#homeLivePoints"),
   awayLivePoints: document.querySelector("#awayLivePoints"),
   homeOdds: document.querySelector("#homeOdds"),
@@ -93,10 +94,9 @@ const refs = {
 };
 
 let lastMatchData = null;
-let activeNewsItems = ["Загружаем новости..."];
-let queuedNewsItems = [];
+let activeTickerText = "Загружаем новости...";
+let queuedTickerText = "";
 let tickerStarted = false;
-let tickerIndex = 0;
 let ctaTimer = null;
 let newsFetchInFlight = null;
 
@@ -319,7 +319,45 @@ function renderSets(data) {
 
 function formatPoint(value) {
   const point = String(value || "").trim().toUpperCase();
-  return point || "-";
+  if (!point) return "-";
+  if (point === "A" || point === "AD") return "Б!";
+  if (point === "40A") return "Б!";
+  return point;
+}
+
+function parsePointPairFromCurrentGame(data) {
+  const point = String(data?.currentGame?.currentPoint || data?.currentGame?.points || "").trim();
+  if (!point) return null;
+  const parts = point.split(":").map((item) => item.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  return { home: parts[0], away: parts[1] };
+}
+
+function looksLikeGamePoint(value) {
+  const point = String(value ?? "").trim().toUpperCase();
+  if (!point) return false;
+  if (/^(0|15|30|40|A|AD|Б!)$/.test(point)) return true;
+  if (/^\d{1,2}$/.test(point)) return Number(point) <= 99;
+  return false;
+}
+
+function resolveCurrentPoints(data) {
+  const fromGame = parsePointPairFromCurrentGame(data);
+  if (fromGame) return fromGame;
+
+  const raw = data?.score?.current || {};
+  const home = String(raw.home ?? "").trim();
+  const away = String(raw.away ?? "").trim();
+  if (looksLikeGamePoint(home) && looksLikeGamePoint(away)) {
+    return { home, away };
+  }
+  return { home: "-", away: "-" };
+}
+
+function renderLivePoint(element, value) {
+  const formatted = formatPoint(value);
+  element.textContent = formatted;
+  element.classList.toggle("advantage", formatted === "Б!");
 }
 
 function renderPlayer(side, player) {
@@ -353,13 +391,9 @@ function renderMatch(data) {
     ? `ВРЕМЯ МАТЧА | ${duration}`
     : "СКОРО";
 
-  const score = data && data.score ? data.score : {};
-  const games = score.games || {};
-  const current = score.current || {};
-  refs.homeLiveGames.textContent = asText(games.home, "-");
-  refs.awayLiveGames.textContent = asText(games.away, "-");
-  refs.homeLivePoints.textContent = formatPoint(current.home);
-  refs.awayLivePoints.textContent = formatPoint(current.away);
+  const current = resolveCurrentPoints(data || {});
+  renderLivePoint(refs.homeLivePoints, current.home);
+  renderLivePoint(refs.awayLivePoints, current.away);
 
   renderPlayer("home", home);
   renderPlayer("away", away);
@@ -403,9 +437,13 @@ function tickerItemsFromPayload(payload) {
   return items.length ? items : ["Новости временно недоступны"];
 }
 
+function tickerTextFromItems(items) {
+  const text = items.map((item) => String(item || "").trim()).filter(Boolean).join(TICKER_SEPARATOR);
+  return text || "Новости временно недоступны";
+}
+
 function beginNewsCycle() {
-  tickerIndex = 0;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 }
 
 function ensureTickerStarted() {
@@ -415,10 +453,10 @@ function ensureTickerStarted() {
 }
 
 function queueNews(items) {
-  queuedNewsItems = items.slice();
+  queuedTickerText = tickerTextFromItems(items);
   if (!tickerStarted) {
-    activeNewsItems = queuedNewsItems.length ? queuedNewsItems.slice() : ["Новости временно недоступны"];
-    queuedNewsItems = [];
+    activeTickerText = queuedTickerText || "Новости временно недоступны";
+    queuedTickerText = "";
     ensureTickerStarted();
   }
 }
@@ -439,9 +477,9 @@ async function queueNewsRefresh() {
 }
 
 async function switchCycleAfterCta() {
-  if (queuedNewsItems.length) {
-    activeNewsItems = queuedNewsItems.slice();
-    queuedNewsItems = [];
+  if (queuedTickerText) {
+    activeTickerText = queuedTickerText;
+    queuedTickerText = "";
   }
   beginNewsCycle();
   queueNewsRefresh();
@@ -458,11 +496,6 @@ function holdCta() {
 
 function handleTickerEnd() {
   if (ctaTimer) return;
-  if (tickerIndex < activeNewsItems.length - 1) {
-    tickerIndex += 1;
-    restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
-    return;
-  }
   holdCta();
 }
 
@@ -477,6 +510,8 @@ function oddsUrl() {
   url.searchParams.set("home", home);
   url.searchParams.set("away", away);
   if (config.winline) url.searchParams.set("matchUrl", config.winline);
+  if (config.homeOdd) url.searchParams.set("homeOdd", config.homeOdd);
+  if (config.awayOdd) url.searchParams.set("awayOdd", config.awayOdd);
   if (lastMatchData && lastMatchData.source && lastMatchData.source.eventId) {
     url.searchParams.set("eventId", lastMatchData.source.eventId);
   }
@@ -511,7 +546,7 @@ refs.tickerTrack.addEventListener("animationend", handleTickerEnd);
 window.addEventListener("resize", () => {
   if (!tickerStarted) return;
   if (ctaTimer) return;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 });
 
 refreshMatch().then(refreshOdds);

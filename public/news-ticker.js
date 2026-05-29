@@ -9,6 +9,7 @@ const TICKER_HEIGHTS = {
 const DEFAULT_TICKER_HEIGHT = 102;
 const DEFAULT_LOGO_ASPECT = 116 / 78;
 const TICKER_CTA_HOLD_MS = 60000;
+const TICKER_SEPARATOR = "   ✦   ";
 
 const config = {
   news: params.get("news") || "/api/news/tennis",
@@ -24,10 +25,9 @@ const refs = {
   cta: document.querySelector("#tickerCta")
 };
 
-let activeNewsItems = ["Загружаем новости..."];
-let queuedNewsItems = [];
+let activeTickerText = "Загружаем новости...";
+let queuedTickerText = "";
 let tickerStarted = false;
-let tickerIndex = 0;
 let ctaTimer = null;
 let fetchInFlight = null;
 
@@ -119,9 +119,13 @@ function restartTicker(text) {
   refs.track.style.animation = "ticker-scroll var(--ticker-duration) linear 1";
 }
 
+function tickerTextFromItems(items) {
+  const text = items.map((item) => String(item || "").trim()).filter(Boolean).join(TICKER_SEPARATOR);
+  return text || "Новости временно недоступны";
+}
+
 function startNewsCycle() {
-  tickerIndex = 0;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 }
 
 function ensureTickerStarted() {
@@ -131,10 +135,10 @@ function ensureTickerStarted() {
 }
 
 function queueNews(items) {
-  queuedNewsItems = items.slice();
+  queuedTickerText = tickerTextFromItems(items);
   if (!tickerStarted) {
-    activeNewsItems = queuedNewsItems.length ? queuedNewsItems.slice() : ["Новости временно недоступны"];
-    queuedNewsItems = [];
+    activeTickerText = queuedTickerText || "Новости временно недоступны";
+    queuedTickerText = "";
     ensureTickerStarted();
   }
 }
@@ -156,9 +160,9 @@ async function queueNewsRefresh() {
 
 function switchCycleAfterCta() {
   ctaTimer = null;
-  if (queuedNewsItems.length) {
-    activeNewsItems = queuedNewsItems.slice();
-    queuedNewsItems = [];
+  if (queuedTickerText) {
+    activeTickerText = queuedTickerText;
+    queuedTickerText = "";
   }
   startNewsCycle();
   queueNewsRefresh();
@@ -172,11 +176,6 @@ function holdCta() {
 
 function handleTickerEnd() {
   if (ctaTimer) return;
-  if (tickerIndex < activeNewsItems.length - 1) {
-    tickerIndex += 1;
-    restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
-    return;
-  }
   holdCta();
 }
 
@@ -185,7 +184,7 @@ refs.track.addEventListener("animationend", handleTickerEnd);
 window.addEventListener("resize", () => {
   if (!tickerStarted) return;
   if (ctaTimer) return;
-  restartTicker(activeNewsItems[tickerIndex] || "Новости временно недоступны");
+  restartTicker(activeTickerText || "Новости временно недоступны");
 });
 
 applyTickerHeight();

@@ -215,9 +215,9 @@ body {
 
 .score-tournament {
   position: absolute;
-  left: 222px;
+  left: 68px;
   top: 17px;
-  width: 700px;
+  width: 900px;
   height: 36px;
   color: #111;
   font-size: 31px;
@@ -231,11 +231,11 @@ body {
 
 .score-clock {
   position: absolute;
-  right: 74px;
+  left: 1008px;
   top: 17px;
-  width: 420px;
+  width: 320px;
   height: 36px;
-  text-align: right;
+  text-align: left;
   color: #111;
   font-size: 31px;
   line-height: 36px;
@@ -249,7 +249,7 @@ body {
   width: 1220px;
   height: 60px;
   display: grid;
-  grid-template-columns: 72px 44px 61px 1fr 50px 16px 66px repeat(5, 46px);
+  grid-template-columns: 72px 44px 61px 631px 66px 16px repeat(5, 46px);
   column-gap: 10px;
   align-items: center;
 }
@@ -338,12 +338,17 @@ body {
 }
 
 .live-value {
-  width: 50px;
+  width: 66px;
   text-align: center;
   color: #111;
   font-size: 36px;
   line-height: 48px;
   font-weight: 700;
+}
+
+.live-value.advantage {
+  font-style: italic;
+  font-weight: 900;
 }
 
 .live-separator {
@@ -357,6 +362,7 @@ body {
 
 .set-cell {
   position: relative;
+  isolation: isolate;
   width: 46px;
   height: 48px;
   display: flex;
