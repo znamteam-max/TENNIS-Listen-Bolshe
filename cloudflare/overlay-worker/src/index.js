@@ -1889,7 +1889,7 @@ const OVERLAY_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tennis Overlay</title>
-<link rel="stylesheet" href="/overlay.css?v=20260529-3">
+<link rel="stylesheet" href="/overlay.css?v=20260529-4">
 </head>
 <body>
 <main id="overlay" class="overlay">
@@ -1954,7 +1954,7 @@ const OVERLAY_HTML = `<!doctype html>
     </div>
   </section>
 </main>
-<script src="/overlay.js?v=20260529-3"></script>
+<script src="/overlay.js?v=20260529-4"></script>
 </body>
 </html>
 `;
@@ -3036,7 +3036,7 @@ const NEWS_TICKER_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Больше! tennis news ticker</title>
-<link rel="stylesheet" href="/news-ticker.css?v=20260529-3">
+<link rel="stylesheet" href="/news-ticker.css?v=20260529-4">
 </head>
 <body>
 <main class="news-ticker-overlay" aria-label="Бегущая строка новостей">
@@ -3049,7 +3049,7 @@ const NEWS_TICKER_HTML = `<!doctype html>
     </div>
   </section>
 </main>
-<script src="/news-ticker.js?v=20260529-3"></script>
+<script src="/news-ticker.js?v=20260529-4"></script>
 </body>
 </html>
 `;
