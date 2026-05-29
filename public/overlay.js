@@ -284,11 +284,21 @@ function formatTournament(match) {
   return `${tournament.toUpperCase()} | ${gender} | ${stage}`;
 }
 
+function isCompletedSet(home, away) {
+  if (!Number.isFinite(home) || !Number.isFinite(away)) return false;
+  if (home === away) return false;
+  const max = Math.max(home, away);
+  const min = Math.min(home, away);
+  if (max < 6) return false;
+  if (max === 6) return min <= 4;
+  if (max === 7) return min >= 5 && min <= 6;
+  return max - min >= 2;
+}
+
 function setWinner(set) {
-  if (set && (set.winner === "home" || set.winner === "away")) return set.winner;
   const home = Number(set && set.homeGames);
   const away = Number(set && set.awayGames);
-  if (!Number.isFinite(home) || !Number.isFinite(away) || home === away) return "";
+  if (!isCompletedSet(home, away)) return "";
   return home > away ? "home" : "away";
 }
 
@@ -320,25 +330,33 @@ function renderSets(data) {
 function formatPoint(value) {
   const point = String(value || "").trim().toUpperCase();
   if (!point) return "-";
-  if (point === "A" || point === "AD") return "Б!";
-  if (point === "40A") return "Б!";
+  if (point.includes("Б!")) return "Б!";
+  if (point === "A" || point === "AD" || point === "40A") return "Б!";
+  const numeric = point.match(/(?:^|[^0-9])(40|30|15|0)(?:[^0-9]|$)/);
+  if (numeric) return numeric[1];
+  const adv = point.match(/(?:^|[^A-Z])(A|AD)(?:[^A-Z]|$)/);
+  if (adv) return "Б!";
   return point;
+}
+
+function cleanPointToken(value) {
+  const formatted = formatPoint(value);
+  return /^(0|15|30|40|Б!)$/.test(formatted) ? formatted : "";
 }
 
 function parsePointPairFromCurrentGame(data) {
   const point = String(data?.currentGame?.currentPoint || data?.currentGame?.points || "").trim();
   if (!point) return null;
-  const parts = point.split(":").map((item) => item.trim()).filter(Boolean);
+  const parts = point.split(":");
   if (parts.length < 2) return null;
-  return { home: parts[0], away: parts[1] };
+  const home = cleanPointToken(parts[0]);
+  const away = cleanPointToken(parts[1]);
+  if (!home || !away) return null;
+  return { home, away };
 }
 
 function looksLikeGamePoint(value) {
-  const point = String(value ?? "").trim().toUpperCase();
-  if (!point) return false;
-  if (/^(0|15|30|40|A|AD|Б!)$/.test(point)) return true;
-  if (/^\d{1,2}$/.test(point)) return Number(point) <= 99;
-  return false;
+  return Boolean(cleanPointToken(value));
 }
 
 function resolveCurrentPoints(data) {
@@ -346,8 +364,8 @@ function resolveCurrentPoints(data) {
   if (fromGame) return fromGame;
 
   const raw = data?.score?.current || {};
-  const home = String(raw.home ?? "").trim();
-  const away = String(raw.away ?? "").trim();
+  const home = cleanPointToken(raw.home);
+  const away = cleanPointToken(raw.away);
   if (looksLikeGamePoint(home) && looksLikeGamePoint(away)) {
     return { home, away };
   }
