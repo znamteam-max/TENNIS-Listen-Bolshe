@@ -5,18 +5,22 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workerPath = join(repoRoot, "cloudflare/overlay-worker/src/index.js");
 
-function escapeForRawTemplate(input) {
+function escapeForTemplate(input) {
   return String(input)
     .replace(/\\/g, "\\\\")
     .replace(/`/g, "\\`")
     .replace(/\$\{/g, "\\${");
 }
 
-function replaceRawConst(source, name, content) {
-  const pattern = new RegExp(`const ${name} = String\\.raw\\\`[\\s\\S]*?\\\`;\\n`);
-  const replacement = `const ${name} = String.raw\`${escapeForRawTemplate(content)}\`;\n`;
-  if (!pattern.test(source)) throw new Error(`Missing raw const: ${name}`);
-  return source.replace(pattern, replacement);
+function replaceTemplateConst(source, name, nextName, content) {
+  const startMarker = `const ${name} = `;
+  const endMarker = `const ${nextName} = `;
+  const start = source.indexOf(startMarker);
+  if (start < 0) throw new Error(`Missing template const start: ${name}`);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end < 0) throw new Error(`Missing template const end anchor: ${nextName}`);
+  const replacement = `const ${name} = \`${escapeForTemplate(content)}\`;\n\n`;
+  return `${source.slice(0, start)}${replacement}${source.slice(end)}`;
 }
 
 function replaceBase64Const(source, name, bytes) {
@@ -35,7 +39,8 @@ function patchCssHelpers(source) {
     'if (url.pathname === "/overlay.css") return text(overlayCss(), "text/css; charset=utf-8");'
   );
 
-  const helperPattern = /function newsTickerCss\(\) \{[\s\S]*?\n\}/;
+  const helperPattern = /function overlayCss\(\) \{[\s\S]*?\n\}\n\nfunction newsTickerCss\(\) \{[\s\S]*?\n\}/;
+  const legacyHelperPattern = /function newsTickerCss\(\) \{[\s\S]*?\n\}/;
   const helperReplacement = `function overlayCss() {
   return OVERLAY_CSS
     .replace('url("/news-ticker-bg.png")', \`url("data:image/png;base64,\${NEWS_TICKER_BG_PNG_BASE64}")\`)
@@ -48,8 +53,9 @@ function newsTickerCss() {
     .replace('url("/news-ticker-logo.png")', \`url("data:image/png;base64,\${NEWS_TICKER_LOGO_BASE64}")\`);
 }`;
 
-  if (!helperPattern.test(next)) throw new Error("Missing newsTickerCss helper");
-  return next.replace(helperPattern, helperReplacement);
+  if (helperPattern.test(next)) return next.replace(helperPattern, helperReplacement);
+  if (legacyHelperPattern.test(next)) return next.replace(legacyHelperPattern, helperReplacement);
+  throw new Error("Missing newsTickerCss helper");
 }
 
 async function run() {
@@ -62,12 +68,12 @@ async function run() {
   const tickerCss = await readFile(join(repoRoot, "public/news-ticker.css"), "utf8");
   const tickerJs = await readFile(join(repoRoot, "public/news-ticker.js"), "utf8");
 
-  worker = replaceRawConst(worker, "OVERLAY_HTML", overlayHtml);
-  worker = replaceRawConst(worker, "OVERLAY_CSS", overlayCss);
-  worker = replaceRawConst(worker, "OVERLAY_JS", overlayJs);
-  worker = replaceRawConst(worker, "NEWS_TICKER_HTML", tickerHtml);
-  worker = replaceRawConst(worker, "NEWS_TICKER_CSS", tickerCss);
-  worker = replaceRawConst(worker, "NEWS_TICKER_JS", tickerJs);
+  worker = replaceTemplateConst(worker, "OVERLAY_HTML", "OVERLAY_CSS", overlayHtml);
+  worker = replaceTemplateConst(worker, "OVERLAY_CSS", "OVERLAY_JS", overlayCss);
+  worker = replaceTemplateConst(worker, "OVERLAY_JS", "NEWS_TICKER_HTML", overlayJs);
+  worker = replaceTemplateConst(worker, "NEWS_TICKER_HTML", "NEWS_TICKER_CSS", tickerHtml);
+  worker = replaceTemplateConst(worker, "NEWS_TICKER_CSS", "NEWS_TICKER_JS", tickerCss);
+  worker = replaceTemplateConst(worker, "NEWS_TICKER_JS", "NEWS_TICKER_BG_PNG_BASE64", tickerJs);
 
   const logoBytes = await readFile(join(repoRoot, "public/news-ticker-logo.png"));
   const tickerBgBytes = await readFile(join(repoRoot, "public/news-ticker-bg.png"));
