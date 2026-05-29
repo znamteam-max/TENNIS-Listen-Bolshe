@@ -8,7 +8,7 @@ const TICKER_HEIGHTS = {
 };
 const DEFAULT_TICKER_HEIGHT = 102;
 const DEFAULT_LOGO_ASPECT = 116 / 78;
-const TICKER_CTA_HOLD_MS = 60_000;
+const TICKER_CTA_HOLD_MS = 60000;
 
 const config = {
   news: params.get("news") || "/api/news/tennis",
@@ -190,4 +190,4 @@ window.addEventListener("resize", () => {
 
 applyTickerHeight();
 queueNewsRefresh();
-setInterval(queueNewsRefresh, Math.max(config.refresh, 10_000));
+setInterval(queueNewsRefresh, Math.max(config.refresh, 10000));

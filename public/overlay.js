@@ -1,7 +1,7 @@
 const params = new URLSearchParams(window.location.search);
 
 const TICKER_SPEEDS = { slow: 60, normal: 100, fast: 130 };
-const TICKER_CTA_HOLD_MS = 60_000;
+const TICKER_CTA_HOLD_MS = 60000;
 const COUNTRY_CODES = {
   Argentina: "ARG",
   Australia: "AUS",
@@ -181,7 +181,7 @@ function transliterateWord(word) {
 
   let result = source;
   for (const [from, to] of digraphs) {
-    result = result.replaceAll(from, to);
+    result = result.split(from).join(to);
   }
 
   let out = "";
@@ -196,7 +196,7 @@ function russianParts(name) {
   const parts = cleaned.split(/\s+/).filter(Boolean);
   if (!parts.length) return { first: "", last: "ИГРОК" };
   if (parts.length === 1) return { first: "", last: parts[0] };
-  return { first: parts.slice(0, -1).join(" "), last: parts.at(-1) || "" };
+  return { first: parts.slice(0, -1).join(" "), last: parts.length ? parts[parts.length - 1] : "" };
 }
 
 function firstInitial(firstName) {
@@ -218,7 +218,7 @@ function toRussianCode(name, fallback = "---") {
   const { last } = russianParts(name);
   const lastRu = hasCyrillic(last) ? last : transliterateWord(last);
   const letters = (lastRu || "").replace(/[^а-яё]/gi, "").toUpperCase();
-  return letters ? letters.slice(0, 3).padEnd(3, letters.at(-1) || " ") : fallback;
+  return letters ? letters.slice(0, 3).padEnd(3, letters.charAt(letters.length - 1) || " ") : fallback;
 }
 
 function countryCode(country) {
@@ -230,7 +230,8 @@ function findStat(stats, sources) {
     const wantedSection = normalize(source[0]);
     const wantedLabel = normalize(source[1]);
     const section = (stats || []).find((item) => normalize(item.section) === wantedSection);
-    const row = section?.rows?.find((item) => normalize(item.label) === wantedLabel);
+    const rows = section && Array.isArray(section.rows) ? section.rows : [];
+    const row = rows.find((item) => normalize(item.label) === wantedLabel);
     if (row) return row;
   }
   return { home: "", away: "" };
@@ -267,31 +268,32 @@ function translateStage(stage) {
 }
 
 function extractStage(match) {
-  const rawTournament = String(match?.tournament || "");
+  const rawTournament = String((match && match.tournament) || "");
+  const tournamentParts = rawTournament.split(" - ");
   const fromTournament = rawTournament.includes(" - ")
-    ? rawTournament.split(" - ").at(-1)
+    ? tournamentParts[tournamentParts.length - 1]
     : "";
-  const fallback = match?.stage || "";
+  const fallback = (match && match.stage) || "";
   return translateStage(fromTournament || fallback);
 }
 
 function formatTournament(match) {
-  const tournament = cleanTournamentName(match?.tournament);
-  const gender = /WTA|WOMEN|ЖЕН/i.test(String(match?.tournament || "")) ? "ЖЕНЩИНЫ" : "МУЖЧИНЫ";
+  const tournament = cleanTournamentName(match && match.tournament);
+  const gender = /WTA|WOMEN|ЖЕН/i.test(String((match && match.tournament) || "")) ? "ЖЕНЩИНЫ" : "МУЖЧИНЫ";
   const stage = (config.stage || extractStage(match) || "МАТЧ").toUpperCase();
   return `${tournament.toUpperCase()} | ${gender} | ${stage}`;
 }
 
 function setWinner(set) {
-  if (set?.winner === "home" || set?.winner === "away") return set.winner;
-  const home = Number(set?.homeGames);
-  const away = Number(set?.awayGames);
+  if (set && (set.winner === "home" || set.winner === "away")) return set.winner;
+  const home = Number(set && set.homeGames);
+  const away = Number(set && set.awayGames);
   if (!Number.isFinite(home) || !Number.isFinite(away) || home === away) return "";
   return home > away ? "home" : "away";
 }
 
 function renderSets(data) {
-  const sets = data.score?.sets || [];
+  const sets = (data && data.score && Array.isArray(data.score.sets)) ? data.score.sets : [];
   for (let i = 0; i < 5; i += 1) {
     const set = sets[i] || {};
     const home = document.querySelector(`#homeSet${i + 1}`);
@@ -337,27 +339,32 @@ function renderPlayer(side, player) {
 
 function renderMatch(data) {
   lastMatchData = data;
-  const home = data.players?.find((player) => player.side === "home") || data.players?.[0] || {};
-  const away = data.players?.find((player) => player.side === "away") || data.players?.[1] || {};
+  const players = data && Array.isArray(data.players) ? data.players : [];
+  const home = players.find((player) => player.side === "home") || players[0] || {};
+  const away = players.find((player) => player.side === "away") || players[1] || {};
 
   refs.statHomeCode.textContent = (config.homeCode || toRussianCode(config.homeName || home.name || home.shortName)).toUpperCase();
   refs.statAwayCode.textContent = (config.awayCode || toRussianCode(config.awayName || away.name || away.shortName)).toUpperCase();
   refs.scoreTournament.textContent = formatTournament(data.match);
 
-  const duration = data.match?.duration || "";
-  refs.scoreClock.textContent = data.match?.status === "live" && duration
+  const match = data && data.match ? data.match : {};
+  const duration = match.duration || "";
+  refs.scoreClock.textContent = match.status === "live" && duration
     ? `ВРЕМЯ МАТЧА | ${duration}`
     : "СКОРО";
 
-  refs.homeLiveGames.textContent = asText(data.score?.games?.home, "-");
-  refs.awayLiveGames.textContent = asText(data.score?.games?.away, "-");
-  refs.homeLivePoints.textContent = formatPoint(data.score?.current?.home);
-  refs.awayLivePoints.textContent = formatPoint(data.score?.current?.away);
+  const score = data && data.score ? data.score : {};
+  const games = score.games || {};
+  const current = score.current || {};
+  refs.homeLiveGames.textContent = asText(games.home, "-");
+  refs.awayLiveGames.textContent = asText(games.away, "-");
+  refs.homeLivePoints.textContent = formatPoint(current.home);
+  refs.awayLivePoints.textContent = formatPoint(current.away);
 
   renderPlayer("home", home);
   renderPlayer("away", away);
   renderSets(data);
-  fillStats(data.statistics || []);
+  fillStats((data && data.statistics) || []);
 }
 
 function tickerSpeed() {
@@ -461,19 +468,25 @@ function handleTickerEnd() {
 
 function oddsUrl() {
   if (config.odds) return config.odds;
-  const home = lastMatchData?.players?.find((player) => player.side === "home")?.name || "";
-  const away = lastMatchData?.players?.find((player) => player.side === "away")?.name || "";
+  const players = lastMatchData && Array.isArray(lastMatchData.players) ? lastMatchData.players : [];
+  const homePlayer = players.find((player) => player.side === "home") || {};
+  const awayPlayer = players.find((player) => player.side === "away") || {};
+  const home = homePlayer.name || "";
+  const away = awayPlayer.name || "";
   const url = new URL("/api/odds/winline", window.location.origin);
   url.searchParams.set("home", home);
   url.searchParams.set("away", away);
   if (config.winline) url.searchParams.set("matchUrl", config.winline);
-  if (lastMatchData?.source?.eventId) url.searchParams.set("eventId", lastMatchData.source.eventId);
+  if (lastMatchData && lastMatchData.source && lastMatchData.source.eventId) {
+    url.searchParams.set("eventId", lastMatchData.source.eventId);
+  }
   return `${url.pathname}${url.search}`;
 }
 
 function renderOdds(payload) {
-  refs.homeOdds.textContent = payload?.odds?.home || "--";
-  refs.awayOdds.textContent = payload?.odds?.away || "--";
+  const odds = payload && payload.odds ? payload.odds : {};
+  refs.homeOdds.textContent = odds.home || "--";
+  refs.awayOdds.textContent = odds.away || "--";
 }
 
 async function refreshMatch() {
@@ -504,5 +517,5 @@ window.addEventListener("resize", () => {
 refreshMatch().then(refreshOdds);
 queueNewsRefresh();
 setInterval(refreshMatch, Math.max(config.poll, 1000));
-setInterval(queueNewsRefresh, 60_000);
-setInterval(refreshOdds, 60_000);
+setInterval(queueNewsRefresh, 60000);
+setInterval(refreshOdds, 60000);
