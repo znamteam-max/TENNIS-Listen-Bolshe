@@ -13,6 +13,9 @@ let promoTopLeftJpgBytes;
 const NEWS_LIMIT = 15;
 const NEWS_CANDIDATE_LIMIT = 60;
 const NEWS_SOURCE_PAGES = 2;
+const UPCOMING_MATCH_WINDOW_SECONDS = 3 * 60 * 60;
+const UPCOMING_MATCH_LOOKBACK_SECONDS = 15 * 60;
+const BOT_DISPLAY_TZ = "Europe/Moscow";
 const NEWS_CTA = "СМОТРИ ПРЯМУЮ ТРАНСЛЯЦИЮ МАТЧА ПО ССЫЛКЕ";
 const NEWS_SAFE_HARD_PATTERNS = [
   { reason: "ukraine", pattern: /украин|україн|ukrain/i },
@@ -1021,7 +1024,7 @@ async function replaceFlowMessage(env, chatId, previousMessageId, payload) {
 
 async function liveMenu(env) {
   try {
-    const items = await liveMatches(env);
+    const items = await menuMatches(env);
     const rows = items.slice(0, 45).map((match) => [button(matchButtonLabel(match), `m|${match.id}`)]);
     rows.push([button("Обновить список матчей", "live")]);
     if (!items.length) {
@@ -1031,12 +1034,12 @@ async function liveMenu(env) {
           "Я помогу собрать ссылку для оверлея за пару шагов.",
           "",
           "Как это работает:",
-          "1) Выбираешь live-матч.",
+          "1) Выбираешь live или ближайший матч (на 3 часа вперед).",
           "2) Выбираешь программу (OBS / Streamlabs / vMix).",
           "3) Выбираешь режим: «Статистика матча» или «Бегущая строка».",
           "4) Получаешь готовую ссылку.",
           "",
-          "Сейчас live-матчи не найдены. Нажми «Обновить список матчей»."
+          "Сейчас нет live и ближайших матчей на 3 часа вперед. Нажми «Обновить список матчей»."
         ].join("\n"),
         reply_markup: keyboard(rows)
       };
@@ -1046,7 +1049,7 @@ async function liveMenu(env) {
         "Привет! Это @listen_bolshe_bot.",
         "Соберем ссылку для оверлея пошагово.",
         "",
-        "Шаг 1 из 4: выбери live-матч."
+        "Шаг 1 из 4: выбери live или ближайший матч на 3 часа вперед."
       ].join("\n"),
       reply_markup: keyboard(rows)
     };
@@ -1443,7 +1446,37 @@ async function applyEditBlock(env, origin, chatId, parsed, block) {
 async function liveMatches(env) {
   return (await flashscoreEvents(env))
     .filter((match) => match.status === "live" && isSupportedMatch(match))
-    .sort((a, b) => `${a.tournament} ${a.home.shortName}`.localeCompare(`${b.tournament} ${b.home.shortName}`));
+    .sort(compareMatchList);
+}
+
+async function menuMatches(env) {
+  const events = (await flashscoreEvents(env)).filter(isSupportedMatch);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const live = events.filter((match) => match.status === "live").sort(compareMatchList);
+  const upcoming = events
+    .filter((match) => isUpcomingMatch(match, nowSeconds))
+    .sort((a, b) => (a.startTimeUnix || 0) - (b.startTimeUnix || 0));
+
+  const merged = [];
+  const seen = new Set();
+  for (const match of [...live, ...upcoming]) {
+    if (seen.has(match.id)) continue;
+    seen.add(match.id);
+    merged.push(match);
+  }
+  return merged;
+}
+
+function compareMatchList(a, b) {
+  return `${a.tournament} ${a.home.shortName}`.localeCompare(`${b.tournament} ${b.home.shortName}`);
+}
+
+function isUpcomingMatch(match, nowSeconds = Math.floor(Date.now() / 1000)) {
+  if (match.status !== "scheduled") return false;
+  if (!Number.isFinite(match.startTimeUnix) || match.startTimeUnix <= 0) return false;
+  const minStart = nowSeconds - UPCOMING_MATCH_LOOKBACK_SECONDS;
+  const maxStart = nowSeconds + UPCOMING_MATCH_WINDOW_SECONDS;
+  return match.startTimeUnix >= minStart && match.startTimeUnix <= maxStart;
 }
 
 async function findMatch(env, matchId) {
@@ -1472,6 +1505,7 @@ function normalizeEvent(record, league, base) {
   const match = {
     id: value(record, "AA"),
     status: value(record, "AB") === "2" ? "live" : value(record, "AB") === "3" ? "finished" : "scheduled",
+    startTimeUnix: parseUnixSeconds(value(record, "AD")),
     stageCode: value(record, "AC"),
     tournament: tournamentName(value(league, "ZA") || value(league, "ZAF")),
     league: value(league, "ZA") || value(league, "ZAF"),
@@ -1508,6 +1542,39 @@ function firstId(raw) {
   return String(raw || "").split("/").filter(Boolean)[0] || "";
 }
 
+function parseUnixSeconds(raw) {
+  const textValue = String(raw || "").trim();
+  const digits = textValue.match(/\d{10,13}/)?.[0];
+  if (!digits) return null;
+  let numeric = Number(digits);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  if (numeric > 1e12) numeric = Math.floor(numeric / 1000);
+  if (numeric < 1e9 || numeric > 2.5e9) return null;
+  return numeric;
+}
+
+function formatStartTime(unixSeconds) {
+  if (!Number.isFinite(unixSeconds) || unixSeconds <= 0) return "";
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: BOT_DISPLAY_TZ
+    }).format(new Date(unixSeconds * 1000));
+  } catch (_error) {
+    return "";
+  }
+}
+
+function upcomingHint(match) {
+  if (match.status !== "scheduled") return "";
+  const start = formatStartTime(match.startTimeUnix);
+  return start ? `Начало матча ориентировочно в ${start} (МСК)` : "";
+}
+
 function tournamentName(raw) {
   const textValue = String(raw || "Tennis").trim();
   return (textValue.split(":").slice(1).join(":").trim() || textValue).replace(/\s+/g, " ");
@@ -1542,17 +1609,21 @@ function scoreLabel(record) {
 }
 
 function matchButtonLabel(match) {
-  return truncate([stageLabel(match), match.score, `${match.home.shortName} - ${match.away.shortName}`].filter(Boolean).join(" | "), 58);
+  const scheduledStart = match.status === "scheduled" ? formatStartTime(match.startTimeUnix) : "";
+  const left = scheduledStart ? `Старт ${scheduledStart}` : stageLabel(match);
+  return truncate([left, match.score, `${match.home.shortName} - ${match.away.shortName}`].filter(Boolean).join(" | "), 58);
 }
 
 function matchTitle(match) {
-  return [match.tournament, `${match.home.name} - ${match.away.name}`, [stageLabel(match), match.score].filter(Boolean).join(" | ")].filter(Boolean).join("\n");
+  const meta = [stageLabel(match), match.score].filter(Boolean).join(" | ");
+  const startHint = upcomingHint(match);
+  return [match.tournament, `${match.home.name} - ${match.away.name}`, meta, startHint].filter(Boolean).join("\n");
 }
 
 function stageLabel(match) {
   if (match.status === "live") return STAGES[match.stageCode] || "Live";
   if (match.status === "finished") return "Finished";
-  return "Scheduled";
+  return "Скоро";
 }
 
 function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
@@ -2980,6 +3051,26 @@ function renderPlayer(side, player) {
   row.classList.toggle("serving", Boolean(player.isServing));
 }
 
+function formatPlannedStart(unixValue) {
+  const numeric = Number(unixValue);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "";
+  const seconds = numeric > 1e12 ? Math.floor(numeric / 1000) : numeric;
+  if (seconds < 1e9 || seconds > 2.5e9) return "";
+  if (seconds < Math.floor(Date.now() / 1000) - 1800) return "";
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Europe/Moscow"
+    }).format(new Date(seconds * 1000));
+  } catch (_error) {
+    return "";
+  }
+}
+
 function renderMatch(data) {
   lastMatchData = data;
   const players = data && Array.isArray(data.players) ? data.players : [];
@@ -2992,9 +3083,15 @@ function renderMatch(data) {
 
   const match = data && data.match ? data.match : {};
   const duration = match.duration || "";
-  refs.scoreClock.textContent = match.status === "live" && duration
-    ? \`ВРЕМЯ МАТЧА | \${duration}\`
-    : "СКОРО";
+
+  const plannedStart = formatPlannedStart(match.startedAtUnix);
+  if (match.status === "live" && duration) {
+    refs.scoreClock.textContent = "ВРЕМЯ МАТЧА | " + duration;
+  } else if (plannedStart) {
+    refs.scoreClock.textContent = "НАЧАЛО МАТЧА | " + plannedStart + " (МСК)";
+  } else {
+    refs.scoreClock.textContent = "СКОРО";
+  }
 
   const current = resolveCurrentPoints(data || {});
   renderLivePoint(refs.homeLivePoints, current.home);
