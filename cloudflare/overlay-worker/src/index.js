@@ -34,11 +34,6 @@ const PROGRAM_LABELS = {
   vmix: "vMix"
 };
 
-const MODE_LABELS = {
-  stats: "Статистика",
-  chat: "Чат"
-};
-
 const TICKER_SPEEDS = {
   slow: { label: "Медленно", pixelsPerSecond: 60 },
   normal: { label: "Средне", pixelsPerSecond: 100 },
@@ -60,6 +55,13 @@ const STAGES = {
 
 const overlayCustomBySession = new Map();
 const pendingEditByReply = new Map();
+const flowMessageByChat = new Map();
+
+const BOT_MODES = new Set(["stats", "ticker"]);
+
+function modeLabel(mode) {
+  return mode === "ticker" ? "Бегущая строка" : "Статистика матча";
+}
 
 export default {
   async fetch(request, env) {
@@ -568,6 +570,9 @@ async function handleTelegramUpdate(update, env, origin) {
     const chatId = message.chat?.id;
     const textValue = String(message.text || message.caption || "").trim();
     if (!chatId) return;
+    if (message.message_id && textValue.startsWith("/")) {
+      await safeDeleteMessage(env, chatId, message.message_id);
+    }
 
     const replyMessageId = message.reply_to_message?.message_id;
     if (replyMessageId && textValue) {
@@ -576,9 +581,9 @@ async function handleTelegramUpdate(update, env, origin) {
         const parsedPayload = parseReplyEditPayload(pending.block, textValue);
         if (!parsedPayload.ok) {
           rememberPendingEdit(chatId, replyMessageId, pending);
-          await telegramApi(env, "sendMessage", {
-            chat_id: chatId,
-            text: `Не понял формат. Отправь в ответ на то же сообщение: ${parsedPayload.hint || "данные двумя значениями"}`
+          await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+            text: `Не понял формат ответа. Пришли данные снова в формате: ${parsedPayload.hint || "два значения через запятую"}`,
+            disable_web_page_preview: true
           });
           return;
         }
@@ -597,8 +602,7 @@ async function handleTelegramUpdate(update, env, origin) {
     const command = textValue.split(/\s+/, 1)[0].replace(/@listen_bolshe_bot$/i, "").toLowerCase();
     if (command === "/start" || command === "start" || command === "/overlay" || command === "overlay") {
       const menu = await liveMenu(env);
-      await telegramApi(env, "sendMessage", {
-        chat_id: chatId,
+      await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
         text: menu.text,
         reply_markup: menu.reply_markup,
         disable_web_page_preview: true
@@ -639,7 +643,7 @@ async function handleTelegramUpdate(update, env, origin) {
       }
 
       const speedKey = TICKER_SPEEDS[parsed.speed] ? parsed.speed : "normal";
-      const modeKey = MODE_LABELS[parsed.mode] ? parsed.mode : "stats";
+      const modeKey = BOT_MODES.has(parsed.mode) ? parsed.mode : "stats";
       const custom = {
         homeName: parsed.homeName,
         awayName: parsed.awayName,
@@ -656,7 +660,7 @@ async function handleTelegramUpdate(update, env, origin) {
           "",
           `Матч: ${matchTitle(match)}`,
           `Программа: ${PROGRAM_LABELS[parsed.program]}`,
-          `Режим: ${MODE_LABELS[modeKey]}`,
+          `Режим: ${modeLabel(modeKey)}`,
           "",
           `URL:\n${url}`
         ].join("\n"),
@@ -741,9 +745,18 @@ async function handleTelegramUpdate(update, env, origin) {
       return;
     }
 
-    await telegramApi(env, "sendMessage", {
-      chat_id: chatId,
-      text: "Команды:\n/start - открыть live-меню\n/overlay - выбрать матч и получить URL для OBS, Streamlabs или vMix\n/names - задать все кастомные поля одной командой\n/edit_names - фамилии игроков\n/edit_codes - короткие подписи для блока статистики\n/edit_stage - стадия турнира\n/edit_odds - коэффициенты вручную"
+    await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+      text: [
+        "Давай начнем с простого сценария.",
+        "",
+        "1) Нажми /start",
+        "2) Выбери матч",
+        "3) Выбери программу",
+        "4) Выбери режим",
+        "",
+        "Для ручных правок доступны команды:",
+        "/edit_names, /edit_codes, /edit_stage, /edit_odds"
+      ].join("\n")
     });
     return;
   }
@@ -761,9 +774,7 @@ async function handleTelegramUpdate(update, env, origin) {
 async function handleTelegramCallback(env, origin, callbackId, chatId, messageId, data) {
   if (data === "live") {
     const menu = await liveMenu(env);
-    await telegramApi(env, "editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
+    await replaceFlowMessage(env, chatId, messageId, {
       text: menu.text,
       reply_markup: menu.reply_markup,
       disable_web_page_preview: true
@@ -775,13 +786,17 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
   if (data.startsWith("m|")) {
     const match = await findMatch(env, data.split("|")[1]);
     if (!match) {
-      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
       return;
     }
-    await telegramApi(env, "editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text: `🎾 Матч выбран\n\n${matchTitle(match)}\n\nВыбери программу:`,
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: [
+        "Отлично, матч выбран.",
+        "",
+        matchTitle(match),
+        "",
+        "Шаг 2 из 4: выбери программу, где ты добавишь ссылку (OBS, Streamlabs или vMix)."
+      ].join("\n"),
       reply_markup: programMenu(match),
       disable_web_page_preview: true
     });
@@ -793,17 +808,21 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const [, matchId, program] = data.split("|");
     const match = await findMatch(env, matchId);
     if (!match) {
-      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
       return;
     }
     if (!PROGRAM_LABELS[program]) {
       await answerCallback(env, callbackId, "Программа не найдена", true);
       return;
     }
-    await telegramApi(env, "editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text: `🎾 ${matchTitle(match)}\n\nПрограмма: ${PROGRAM_LABELS[program]}\nВыбери режим оверлея:`,
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: [
+        matchTitle(match),
+        "",
+        `Программа: ${PROGRAM_LABELS[program]}`,
+        "",
+        "Шаг 3 из 4: выбери, что именно нужно вывести в эфир."
+      ].join("\n"),
       reply_markup: modeMenu(match, program),
       disable_web_page_preview: true
     });
@@ -815,21 +834,37 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const [, matchId, program, mode] = data.split("|");
     const match = await findMatch(env, matchId);
     if (!match) {
-      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
       return;
     }
     if (!PROGRAM_LABELS[program]) {
       await answerCallback(env, callbackId, "Программа не найдена", true);
       return;
     }
-    if (!MODE_LABELS[mode]) {
+    if (!BOT_MODES.has(mode)) {
       await answerCallback(env, callbackId, "Режим не найден", true);
       return;
     }
-    await telegramApi(env, "editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text: `🎾 ${matchTitle(match)}\n\nПрограмма: ${PROGRAM_LABELS[program]}\nРежим: ${MODE_LABELS[mode]}\n\nВыбери скорость нижней бегущей строки:`,
+    if (mode === "stats") {
+      const speed = "normal";
+      const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+      await replaceFlowMessage(env, chatId, messageId, {
+        text: overlayInstructions(origin, match, program, mode, speed, custom),
+        reply_markup: readyMenu(match, program, mode, speed, custom),
+        disable_web_page_preview: true
+      });
+      await answerCallback(env, callbackId, "Ссылка готова");
+      return;
+    }
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: [
+        matchTitle(match),
+        "",
+        `Программа: ${PROGRAM_LABELS[program]}`,
+        `Режим: ${modeLabel(mode)}`,
+        "",
+        "Шаг 4 из 4: выбери скорость бегущей строки."
+      ].join("\n"),
       reply_markup: speedMenu(match, program, mode),
       disable_web_page_preview: true
     });
@@ -841,14 +876,14 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const [, matchId, program, mode, speed] = data.split("|");
     const match = await findMatch(env, matchId);
     if (!match) {
-      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
       return;
     }
     if (!PROGRAM_LABELS[program]) {
       await answerCallback(env, callbackId, "Программа не найдена", true);
       return;
     }
-    if (!MODE_LABELS[mode]) {
+    if (!BOT_MODES.has(mode)) {
       await answerCallback(env, callbackId, "Режим не найден", true);
       return;
     }
@@ -857,9 +892,7 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       return;
     }
     const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
-    await telegramApi(env, "editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
+    await replaceFlowMessage(env, chatId, messageId, {
       text: overlayInstructions(origin, match, program, mode, speed, custom),
       reply_markup: readyMenu(match, program, mode, speed, custom),
       disable_web_page_preview: true
@@ -872,9 +905,7 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const [, matchId, program, mode, speed] = data.split("|");
     const match = await findMatch(env, matchId);
     if (match) {
-      await telegramApi(env, "editMessageText", {
-        chat_id: chatId,
-        message_id: messageId,
+      await replaceFlowMessage(env, chatId, messageId, {
         text: editMenuText(match, program, mode, speed, getOverlayCustom(chatId, match.id, program, mode, speed)),
         reply_markup: editBlocksMenu(match, program, mode, speed),
         disable_web_page_preview: true
@@ -883,7 +914,7 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       return;
     }
     if (!match) {
-      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
       return;
     }
   }
@@ -892,11 +923,10 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const [block, matchId, program, mode, speed] = data.split("|");
     const match = await findMatch(env, matchId);
     if (!match) {
-      await answerCallback(env, callbackId, "Матч не найден или уже пропал из списка", true);
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
       return;
     }
-    const prompt = await telegramApi(env, "sendMessage", {
-      chat_id: chatId,
+    const prompt = await replaceFlowMessage(env, chatId, messageId, {
       text: editBlockPrompt(block, match, program, mode, speed, getOverlayCustom(chatId, match.id, program, mode, speed)),
       reply_markup: { force_reply: true, selective: true },
       disable_web_page_preview: true
@@ -939,25 +969,81 @@ function answerCallback(env, callbackQueryId, textValue = "", showAlert = false)
   });
 }
 
+function flowChatKey(chatId) {
+  return String(chatId || "");
+}
+
+function getFlowMessageId(chatId) {
+  return flowMessageByChat.get(flowChatKey(chatId)) || null;
+}
+
+function setFlowMessageId(chatId, messageId) {
+  if (!messageId) return;
+  flowMessageByChat.set(flowChatKey(chatId), Number(messageId));
+}
+
+async function safeDeleteMessage(env, chatId, messageId) {
+  if (!chatId || !messageId) return;
+  try {
+    await telegramApi(env, "deleteMessage", { chat_id: chatId, message_id: Number(messageId) });
+  } catch (_error) {
+    // ignore cleanup errors
+  }
+}
+
+async function replaceFlowMessage(env, chatId, previousMessageId, payload) {
+  const sent = await telegramApi(env, "sendMessage", { chat_id: chatId, ...payload });
+  const newMessageId = sent?.result?.message_id;
+  const tracked = getFlowMessageId(chatId);
+  const toDelete = new Set([tracked, previousMessageId].filter(Boolean));
+  if (newMessageId) toDelete.delete(newMessageId);
+  for (const oldId of toDelete) {
+    await safeDeleteMessage(env, chatId, oldId);
+  }
+  if (newMessageId) setFlowMessageId(chatId, newMessageId);
+  return sent;
+}
+
 async function liveMenu(env) {
   try {
     const items = await liveMatches(env);
     const rows = items.slice(0, 45).map((match) => [button(matchButtonLabel(match), `m|${match.id}`)]);
-    rows.push([button("Обновить список", "live")]);
+    rows.push([button("Обновить список матчей", "live")]);
     if (!items.length) {
       return {
-        text: "🎾 Live оверлей\nСейчас live-матчи не найдены. Нажми «Обновить список» через минуту.",
+        text: [
+          "Привет! Это @listen_bolshe_bot.",
+          "Я помогу собрать ссылку для оверлея за пару шагов.",
+          "",
+          "Как это работает:",
+          "1) Выбираешь live-матч.",
+          "2) Выбираешь программу (OBS / Streamlabs / vMix).",
+          "3) Выбираешь режим: «Статистика матча» или «Бегущая строка».",
+          "4) Получаешь готовую ссылку.",
+          "",
+          "Сейчас live-матчи не найдены. Нажми «Обновить список матчей»."
+        ].join("\n"),
         reply_markup: keyboard(rows)
       };
     }
     return {
-      text: "🎾 Live оверлей\nВыбери матч для трансляции:",
+      text: [
+        "Привет! Это @listen_bolshe_bot.",
+        "Соберем ссылку для оверлея пошагово.",
+        "",
+        "Шаг 1 из 4: выбери live-матч."
+      ].join("\n"),
       reply_markup: keyboard(rows)
     };
   } catch (error) {
     return {
-      text: `🎾 Live оверлей\nНе удалось получить live-матчи: ${error?.message || error}`,
-      reply_markup: keyboard([[button("Обновить список", "live")]])
+      text: [
+        "Не получилось загрузить список матчей.",
+        `Ошибка: ${error?.message || error}`,
+        "",
+        "Нажми «Обновить список матчей»."
+      ].join("\n"),
+      reply_markup: keyboard([[button("Обновить список матчей", "live")]])
     };
   }
 }
@@ -966,15 +1052,16 @@ function programMenu(match) {
   return keyboard([
     [button("OBS", `p|${match.id}|obs`), button("Streamlabs", `p|${match.id}|streamlabs`)],
     [button("vMix", `p|${match.id}|vmix`)],
-    [button("К live матчам", "live")]
+    [button("Назад к матчам", "live")]
   ]);
 }
 
 function modeMenu(match, program) {
   return keyboard([
-    [button("Статистика", `r|${match.id}|${program}|stats`), button("Чат", `r|${match.id}|${program}|chat`)],
-    [button("Другая программа", `m|${match.id}`)],
-    [button("К live матчам", "live")]
+    [button("Статистика матча", `r|${match.id}|${program}|stats`)],
+    [button("Бегущая строка", `r|${match.id}|${program}|ticker`)],
+    [button("Назад к выбору программы", `m|${match.id}`)],
+    [button("Назад к матчам", "live")]
   ]);
 }
 
@@ -985,24 +1072,29 @@ function speedMenu(match, program, mode) {
       button("Средне", `s|${match.id}|${program}|${mode}|normal`),
       button("Быстрее", `s|${match.id}|${program}|${mode}|fast`)
     ],
-    [button("Другой режим", `p|${match.id}|${program}`)],
-    [button("Другая программа", `m|${match.id}`)],
-    [button("К live матчам", "live")]
+    [button("Назад к выбору режима", `p|${match.id}|${program}`)],
+    [button("Назад к выбору программы", `m|${match.id}`)],
+    [button("Назад к матчам", "live")]
   ]);
 }
 
 function readyMenu(match, program, mode, speed) {
-  return keyboard([
-    [button("Статистика", `r|${match.id}|${program}|stats`), button("Чат", `r|${match.id}|${program}|chat`)],
-    [
+  const rows = [
+    [button("Статистика матча", `r|${match.id}|${program}|stats`), button("Бегущая строка", `r|${match.id}|${program}|ticker`)]
+  ];
+  if (mode === "ticker") {
+    rows.push([
       button("Медленно", `s|${match.id}|${program}|${mode}|slow`),
       button("Средне", `s|${match.id}|${program}|${mode}|normal`),
       button("Быстрее", `s|${match.id}|${program}|${mode}|fast`)
-    ],
-    [button("Редактировать блоки", `e|${match.id}|${program}|${mode}|${speed}`)],
-    [button("Другая программа", `m|${match.id}`)],
-    [button("К live матчам", "live")]
-  ]);
+    ]);
+  }
+  if (mode === "stats") {
+    rows.push([button("Редактировать блоки", `e|${match.id}|${program}|${mode}|${speed}`)]);
+  }
+  rows.push([button("Выбрать другую программу", `m|${match.id}`)]);
+  rows.push([button("К списку матчей", "live")]);
+  return keyboard(rows);
 }
 
 function keyboard(rows) {
@@ -1194,7 +1286,7 @@ function editMenuText(match, program, mode, speed, custom = {}) {
     "",
     matchTitle(match),
     `Программа: ${PROGRAM_LABELS[program] || program}`,
-    `Режим: ${MODE_LABELS[mode] || mode}`,
+    `Режим: ${modeLabel(mode)}`,
     `Скорость строки: ${TICKER_SPEEDS[speed]?.label || speed}`,
     "",
     ...customSummaryLines(custom),
@@ -1274,7 +1366,7 @@ function editBlockPrompt(block, match, program, mode, speed, custom = {}) {
     "",
     matchTitle(match),
     `Программа: ${PROGRAM_LABELS[program] || program}`,
-    `Режим: ${MODE_LABELS[mode] || mode}`,
+    `Режим: ${modeLabel(mode)}`,
     `Скорость: ${TICKER_SPEEDS[speed]?.label || speed}`,
     "",
     ...customSummaryLines(custom),
@@ -1286,21 +1378,21 @@ function editBlockPrompt(block, match, program, mode, speed, custom = {}) {
 async function applyEditBlock(env, origin, chatId, parsed, block) {
   const match = await findMatch(env, parsed.matchId);
   if (!match) {
-    await telegramApi(env, "sendMessage", {
-      chat_id: chatId,
-      text: "Матч не найден или уже исчез из live-списка. Выбери его заново через /start."
+    await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+      text: "Матч не найден или уже исчез из live-списка. Выбери его заново через /start.",
+      disable_web_page_preview: true
     });
     return;
   }
   if (!PROGRAM_LABELS[parsed.program]) {
-    await telegramApi(env, "sendMessage", {
-      chat_id: chatId,
-      text: "Неверная программа. Используй obs, streamlabs или vmix."
+    await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+      text: "Неверная программа. Используй obs, streamlabs или vmix.",
+      disable_web_page_preview: true
     });
     return;
   }
 
-  const modeKey = MODE_LABELS[parsed.mode] ? parsed.mode : "stats";
+  const modeKey = BOT_MODES.has(parsed.mode) ? parsed.mode : "stats";
   const speedKey = TICKER_SPEEDS[parsed.speed] ? parsed.speed : "normal";
   const patch = {};
 
@@ -1319,8 +1411,7 @@ async function applyEditBlock(env, origin, chatId, parsed, block) {
 
   const custom = setOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey, patch);
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
-  await telegramApi(env, "sendMessage", {
-    chat_id: chatId,
+  await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
     text: [
       "Готово, блок обновлен.",
       "",
@@ -1450,32 +1541,56 @@ function stageLabel(match) {
 
 function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
   const programKey = PROGRAM_LABELS[program] ? program : "obs";
-  const modeKey = MODE_LABELS[mode] ? mode : "stats";
+  const modeKey = BOT_MODES.has(mode) ? mode : "stats";
   const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+  if (modeKey === "ticker") {
+    return [
+      "Готово. Ссылка на бегущую строку собрана.",
+      "",
+      `Матч для контекста: ${match.home.name} - ${match.away.name}`,
+      `Программа: ${PROGRAM_LABELS[programKey]}`,
+      `Режим: ${modeLabel(modeKey)}`,
+      `Скорость: ${TICKER_SPEEDS[speedKey].label} (${TICKER_SPEEDS[speedKey].pixelsPerSecond})`,
+      "",
+      "URL:",
+      url,
+      "",
+      "Что делать дальше:",
+      ...programSteps(programKey)
+    ].join("\n");
+  }
   return [
-    "🎾 Оверлей готов",
+    "Готово. Ссылка на статистику матча собрана.",
     "",
     `Матч:\n${matchTitle(match)}`,
     "",
     `Программа: ${PROGRAM_LABELS[programKey]}`,
-    `Режим: ${MODE_LABELS[modeKey]}`,
+    `Режим: ${modeLabel(modeKey)}`,
     `Скорость строки: ${TICKER_SPEEDS[speedKey].label} (${TICKER_SPEEDS[speedKey].pixelsPerSecond})`,
     "",
     "URL:",
     url,
     "",
-    "Кастомные русские подписи и стадия:",
-    `/names ${match.id} ${programKey} ${modeKey} ${speedKey} Д. МЕДВЕДЕВ ; Х-М. СЕРУНДОЛО ; МЕД ; СЕР ; ПЕРВЫЙ КРУГ`,
+    "Подсказка по ручным правкам:",
+    "Открой «Редактировать блоки» и меняй отдельно фамилии, короткие подписи, стадию и коэффициенты.",
     "",
     "Что делать дальше:",
     ...programSteps(programKey),
-    "",
-    "Оверлей сам обновляет данные. Если переключаешь матч, просто замени URL в источнике."
   ].join("\n");
 }
 
 function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
+  if (mode === "ticker") {
+    const tickerSpeed = TICKER_SPEEDS[speed]?.pixelsPerSecond || 100;
+    const tickerQuery = new URLSearchParams({
+      ticker: String(tickerSpeed),
+      height: "normal",
+      refresh: "60000",
+      limit: String(NEWS_LIMIT)
+    });
+    return `${origin}${NEWS_TICKER_PATH}?${tickerQuery.toString()}`;
+  }
   const sourceQuery = new URLSearchParams({ url: match.url }).toString();
   const source = `/api/match/flashscore?${sourceQuery}`;
   const newsSource = "/api/news/tennis";
