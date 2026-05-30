@@ -638,7 +638,7 @@ async function handleTelegramUpdate(update, env, origin) {
             "/names <matchId> <program> <mode> <speed> <homeName> ; <awayName> ; <homeCode> ; <awayCode> ; <stage>",
             "",
             "Пример:",
-            "/names WIzfqXXr obs stats normal Д. МЕДВЕДЕВ ; Х-М. СЕРУНДОЛО ; МЕД ; СЕР ; ПЕРВЫЙ КРУГ"
+            "/names WIzfqXXr obs stats normal Д. МЕДВЕДЕВ ; Х-М. СЕРУНДОЛО ; RUS ; USA ; ПЕРВЫЙ КРУГ"
           ].join("\n")
         });
         return;
@@ -713,10 +713,13 @@ async function handleTelegramUpdate(update, env, origin) {
           chat_id: chatId,
           text: [
             "Формат команды:",
-            "/edit_codes <matchId> <program> <mode> <speed> <homeCode> ; <awayCode>",
+            "/edit_countries <matchId> <program> <mode> <speed> <homeCountry>, <awayCountry>",
             "",
             "Пример:",
-            "/edit_codes WIzfqXXr obs stats normal АДМ ; МЕН"
+            "/edit_countries WIzfqXXr obs stats normal RUS, USA",
+            "",
+            "Также работает:",
+            "/edit_codes WIzfqXXr obs stats normal RUS; USA"
           ].join("\n")
         });
         return;
@@ -1174,12 +1177,12 @@ function parseEditNamesCommand(textValue) {
 function parseEditCountriesCommand(textValue) {
   const parsed = parseEditCommand(textValue, ["edit_codes", "edit_countries"]);
   if (!parsed.ok) return parsed;
-  const chunks = parsed.payload.split(";").map((item) => item.trim()).filter(Boolean);
-  if (chunks.length < 2) return { ok: false };
+  const pair = splitTwoValues(parsed.payload);
+  if (!pair) return { ok: false };
   return {
     ...parsed,
-    homeCode: normalizeCountryCode(chunks[0]),
-    awayCode: normalizeCountryCode(chunks[1])
+    homeCode: normalizeCountryCode(pair[0]),
+    awayCode: normalizeCountryCode(pair[1])
   };
 }
 
@@ -1218,10 +1221,10 @@ function parseReplyEditPayload(block, textValue) {
 
   if (block === "codes" || block === "countries") {
     const pair = splitTwoValues(textValue);
-    if (!pair) return { ok: false, hint: "АДМ, МЕН" };
+    if (!pair) return { ok: false, hint: "RUS, USA" };
     const homeCode = normalizeCountryCode(pair[0]);
     const awayCode = normalizeCountryCode(pair[1]);
-    if (!homeCode || !awayCode) return { ok: false, hint: "АДМ, МЕН" };
+    if (!homeCode || !awayCode) return { ok: false, hint: "RUS, USA" };
     return { ok: true, homeCode, awayCode };
   }
 
@@ -1292,7 +1295,7 @@ function normalizeFreeText(value) {
 function customSummaryLines(custom = {}) {
   return [
     `Фамилии: ${custom.homeName || "авто"} / ${custom.awayName || "авто"}`,
-    `Короткие: ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
+    `Страны/коды: ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
     `Стадия: ${custom.stage || "авто"}`,
     `Коэффициенты: ${custom.homeOdd || "авто"} / ${custom.awayOdd || "авто"}`
   ];
@@ -1315,7 +1318,7 @@ function editMenuText(match, program, mode, speed, custom = {}) {
 
 function editBlocksMenu(match, program, mode, speed) {
   return keyboard([
-    [button("Фамилии", `en|${match.id}|${program}|${mode}|${speed}`), button("Короткие", `ec|${match.id}|${program}|${mode}|${speed}`)],
+    [button("Фамилии", `en|${match.id}|${program}|${mode}|${speed}`), button("Страны / коды", `ec|${match.id}|${program}|${mode}|${speed}`)],
     [button("Стадия", `es|${match.id}|${program}|${mode}|${speed}`), button("Коэффициенты", `eo|${match.id}|${program}|${mode}|${speed}`)],
     [button("Назад", `s|${match.id}|${program}|${mode}|${speed}`)],
     [button("К live матчам", "live")]
@@ -1341,7 +1344,7 @@ function editBlockPromptLegacy(block, match, program, mode, speed, custom = {}) 
       ...customSummaryLines(custom),
       "",
       "Команда:",
-      `/edit_countries ${shared} BRA ; SRB`
+      `/edit_countries ${shared} RUS, USA`
     ].join("\n");
   }
   if (block === "es") {
@@ -1368,14 +1371,14 @@ function editBlockPrompt(block, match, program, mode, speed, custom = {}) {
   const blockLabel = block === "en"
     ? "Фамилии"
     : block === "ec"
-      ? "Короткие для статистики"
+      ? "Страны / короткие коды"
       : block === "es"
         ? "Стадия турнира"
         : "Коэффициенты";
   const formatHint = block === "en"
     ? "И. Фамилия, И. Фамилия"
     : block === "ec"
-      ? "АДМ, МЕН"
+      ? "RUS, USA"
       : block === "es"
         ? "ТРЕТИЙ КРУГ"
         : "1.74, 2.15";
