@@ -3501,7 +3501,7 @@ body {
   background: url("/news-ticker-bg.png") left bottom / 1920px 1080px no-repeat;
 }
 
-.ticker::before {
+.news-ticker-overlay.size-small .ticker::before {
   content: "";
   position: absolute;
   left: var(--ticker-logo-left);
