@@ -706,7 +706,26 @@ async function handleTelegramUpdate(update, env, origin) {
       return;
     }
 
-    if (command === "/edit_codes" || command === "edit_codes" || command === "/edit_countries" || command === "edit_countries") {
+    if (command === "/edit_codes" || command === "edit_codes") {
+      const parsed = parseEditCodesCommand(textValue);
+      if (!parsed.ok) {
+        await telegramApi(env, "sendMessage", {
+          chat_id: chatId,
+          text: [
+            "Формат команды:",
+            "/edit_codes <matchId> <program> <mode> <speed> <homeShortCode>, <awayShortCode>",
+            "",
+            "Пример:",
+            "/edit_codes WIzfqXXr obs stats normal МЕД, СЕР"
+          ].join("\n")
+        });
+        return;
+      }
+      await applyEditBlock(env, origin, chatId, parsed, "codes");
+      return;
+    }
+
+    if (command === "/edit_countries" || command === "edit_countries") {
       const parsed = parseEditCountriesCommand(textValue);
       if (!parsed.ok) {
         await telegramApi(env, "sendMessage", {
@@ -716,15 +735,12 @@ async function handleTelegramUpdate(update, env, origin) {
             "/edit_countries <matchId> <program> <mode> <speed> <homeCountry>, <awayCountry>",
             "",
             "Пример:",
-            "/edit_countries WIzfqXXr obs stats normal RUS, USA",
-            "",
-            "Также работает:",
-            "/edit_codes WIzfqXXr obs stats normal RUS; USA"
+            "/edit_countries WIzfqXXr obs stats normal RUS, USA"
           ].join("\n")
         });
         return;
       }
-      await applyEditBlock(env, origin, chatId, parsed, "codes");
+      await applyEditBlock(env, origin, chatId, parsed, "countries");
       return;
     }
 
@@ -776,7 +792,7 @@ async function handleTelegramUpdate(update, env, origin) {
         "4) Выбери режим",
         "",
         "Для ручных правок доступны команды:",
-        "/edit_names, /edit_codes, /edit_stage, /edit_odds"
+        "/edit_names, /edit_codes, /edit_countries, /edit_stage, /edit_odds"
       ].join("\n")
     });
     return;
@@ -940,7 +956,7 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     }
   }
 
-  if (data.startsWith("en|") || data.startsWith("ec|") || data.startsWith("es|") || data.startsWith("eo|")) {
+  if (data.startsWith("en|") || data.startsWith("ec|") || data.startsWith("eg|") || data.startsWith("es|") || data.startsWith("eo|")) {
     const [block, matchId, program, mode, speed] = data.split("|");
     const match = await findMatch(env, matchId);
     if (!match) {
@@ -954,7 +970,15 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     });
     const replyMessageId = prompt?.result?.message_id;
     if (replyMessageId) {
-      const mappedBlock = block === "en" ? "names" : block === "ec" ? "codes" : block === "es" ? "stage" : "odds";
+      const mappedBlock = block === "en"
+        ? "names"
+        : block === "ec"
+          ? "codes"
+          : block === "eg"
+            ? "countries"
+            : block === "es"
+              ? "stage"
+              : "odds";
       rememberPendingEdit(chatId, replyMessageId, { matchId, program, mode, speed, block: mappedBlock });
     }
     await answerCallback(env, callbackId);
@@ -1174,8 +1198,8 @@ function parseEditNamesCommand(textValue) {
   return { ...parsed, homeName: chunks[0], awayName: chunks.slice(1).join("; ").trim() };
 }
 
-function parseEditCountriesCommand(textValue) {
-  const parsed = parseEditCommand(textValue, ["edit_codes", "edit_countries"]);
+function parseEditCodesCommand(textValue) {
+  const parsed = parseEditCommand(textValue, "edit_codes");
   if (!parsed.ok) return parsed;
   const pair = splitTwoValues(parsed.payload);
   if (!pair) return { ok: false };
@@ -1183,6 +1207,18 @@ function parseEditCountriesCommand(textValue) {
     ...parsed,
     homeCode: normalizeCountryCode(pair[0]),
     awayCode: normalizeCountryCode(pair[1])
+  };
+}
+
+function parseEditCountriesCommand(textValue) {
+  const parsed = parseEditCommand(textValue, "edit_countries");
+  if (!parsed.ok) return parsed;
+  const pair = splitTwoValues(parsed.payload);
+  if (!pair) return { ok: false };
+  return {
+    ...parsed,
+    homeCountry: normalizeCountryCode(pair[0]),
+    awayCountry: normalizeCountryCode(pair[1])
   };
 }
 
@@ -1221,10 +1257,16 @@ function parseReplyEditPayload(block, textValue) {
 
   if (block === "codes" || block === "countries") {
     const pair = splitTwoValues(textValue);
-    if (!pair) return { ok: false, hint: "RUS, USA" };
+    if (!pair) return { ok: false, hint: block === "countries" ? "RUS, USA" : "АДМ, МЕН" };
+    if (block === "countries") {
+      const homeCountry = normalizeCountryCode(pair[0]);
+      const awayCountry = normalizeCountryCode(pair[1]);
+      if (!homeCountry || !awayCountry) return { ok: false, hint: "RUS, USA" };
+      return { ok: true, homeCountry, awayCountry };
+    }
     const homeCode = normalizeCountryCode(pair[0]);
     const awayCode = normalizeCountryCode(pair[1]);
-    if (!homeCode || !awayCode) return { ok: false, hint: "RUS, USA" };
+    if (!homeCode || !awayCode) return { ok: false, hint: "АДМ, МЕН" };
     return { ok: true, homeCode, awayCode };
   }
 
@@ -1258,7 +1300,7 @@ function setOverlayCustom(chatId, matchId, program, mode, speed, patch) {
   const key = overlaySessionKey(chatId, matchId, program, mode, speed);
   const current = getOverlayCustom(chatId, matchId, program, mode, speed);
   const next = { ...current, ...patch };
-  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "stage", "homeOdd", "awayOdd"]) {
+  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "homeCountry", "awayCountry", "stage", "homeOdd", "awayOdd"]) {
     if (!String(next[prop] ?? "").trim()) delete next[prop];
   }
   if (!Object.keys(next).length) {
@@ -1295,7 +1337,8 @@ function normalizeFreeText(value) {
 function customSummaryLines(custom = {}) {
   return [
     `Фамилии: ${custom.homeName || "авто"} / ${custom.awayName || "авто"}`,
-    `Страны/коды: ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
+    `Короткие (статистика): ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
+    `Страны (табло): ${custom.homeCountry || "авто"} / ${custom.awayCountry || "авто"}`,
     `Стадия: ${custom.stage || "авто"}`,
     `Коэффициенты: ${custom.homeOdd || "авто"} / ${custom.awayOdd || "авто"}`
   ];
@@ -1318,8 +1361,9 @@ function editMenuText(match, program, mode, speed, custom = {}) {
 
 function editBlocksMenu(match, program, mode, speed) {
   return keyboard([
-    [button("Фамилии", `en|${match.id}|${program}|${mode}|${speed}`), button("Страны / коды", `ec|${match.id}|${program}|${mode}|${speed}`)],
-    [button("Стадия", `es|${match.id}|${program}|${mode}|${speed}`), button("Коэффициенты", `eo|${match.id}|${program}|${mode}|${speed}`)],
+    [button("Фамилии", `en|${match.id}|${program}|${mode}|${speed}`), button("Короткие", `ec|${match.id}|${program}|${mode}|${speed}`)],
+    [button("Страны", `eg|${match.id}|${program}|${mode}|${speed}`), button("Стадия", `es|${match.id}|${program}|${mode}|${speed}`)],
+    [button("Коэффициенты", `eo|${match.id}|${program}|${mode}|${speed}`)],
     [button("Назад", `s|${match.id}|${program}|${mode}|${speed}`)],
     [button("К live матчам", "live")]
   ]);
@@ -1338,6 +1382,16 @@ function editBlockPromptLegacy(block, match, program, mode, speed, custom = {}) 
     ].join("\n");
   }
   if (block === "ec") {
+    return [
+      "Редактирование коротких подписей",
+      "",
+      ...customSummaryLines(custom),
+      "",
+      "Команда:",
+      `/edit_codes ${shared} МЕД, СЕР`
+    ].join("\n");
+  }
+  if (block === "eg") {
     return [
       "Редактирование стран",
       "",
@@ -1371,14 +1425,18 @@ function editBlockPrompt(block, match, program, mode, speed, custom = {}) {
   const blockLabel = block === "en"
     ? "Фамилии"
     : block === "ec"
-      ? "Страны / короткие коды"
+      ? "Короткие для статистики"
+      : block === "eg"
+        ? "Страны в блоке счета"
       : block === "es"
         ? "Стадия турнира"
         : "Коэффициенты";
   const formatHint = block === "en"
     ? "И. Фамилия, И. Фамилия"
     : block === "ec"
-      ? "RUS, USA"
+      ? "АДМ, МЕН"
+      : block === "eg"
+        ? "RUS, USA"
       : block === "es"
         ? "ТРЕТИЙ КРУГ"
         : "1.74, 2.15";
@@ -1420,9 +1478,12 @@ async function applyEditBlock(env, origin, chatId, parsed, block) {
   if (block === "names") {
     patch.homeName = normalizeFreeText(parsed.homeName);
     patch.awayName = normalizeFreeText(parsed.awayName);
-  } else if (block === "codes" || block === "countries") {
+  } else if (block === "codes") {
     patch.homeCode = normalizeCountryCode(parsed.homeCode);
     patch.awayCode = normalizeCountryCode(parsed.awayCode);
+  } else if (block === "countries") {
+    patch.homeCountry = normalizeCountryCode(parsed.homeCountry);
+    patch.awayCountry = normalizeCountryCode(parsed.awayCountry);
   } else if (block === "stage") {
     patch.stage = normalizeFreeText(parsed.stage);
   } else if (block === "odds") {
@@ -1705,6 +1766,8 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
   if (custom.awayName) query.set("awayName", custom.awayName);
   if (custom.homeCode) query.set("homeCode", custom.homeCode);
   if (custom.awayCode) query.set("awayCode", custom.awayCode);
+  if (custom.homeCountry) query.set("homeCountry", custom.homeCountry);
+  if (custom.awayCountry) query.set("awayCountry", custom.awayCountry);
   if (custom.stage) query.set("stage", custom.stage);
   if (custom.homeOdd) query.set("homeOdd", custom.homeOdd);
   if (custom.awayOdd) query.set("awayOdd", custom.awayOdd);
@@ -2727,6 +2790,8 @@ const config = {
   awayName: params.get("awayName") || "",
   homeCode: params.get("homeCode") || "",
   awayCode: params.get("awayCode") || "",
+  homeCountry: params.get("homeCountry") || "",
+  awayCountry: params.get("awayCountry") || "",
   homeOdd: params.get("homeOdd") || "",
   awayOdd: params.get("awayOdd") || ""
 };
@@ -3047,8 +3112,9 @@ function renderPlayer(side, player) {
   const country = isHome ? refs.homeCountry : refs.awayCountry;
   const scoreName = isHome ? refs.homeScoreName : refs.awayScoreName;
   const forcedName = isHome ? config.homeName : config.awayName;
+  const forcedCountry = isHome ? config.homeCountry : config.awayCountry;
 
-  country.textContent = countryCode(player.country);
+  country.textContent = countryCode(forcedCountry || player.country);
   scoreName.textContent = toRussianDisplayName(forcedName || player.name || player.shortName);
   photo.src = player.image || "";
   photo.alt = player.name || "";
