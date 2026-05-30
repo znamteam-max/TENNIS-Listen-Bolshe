@@ -43,6 +43,11 @@ const TICKER_SPEEDS = {
   fast: { label: "Быстрее", pixelsPerSecond: 130 }
 };
 
+const TICKER_SIZES = {
+  normal: { label: "Нормальный", param: "normal" },
+  small: { label: "Маленький", param: "small" }
+};
+
 const STAGES = {
   "1": "Scheduled",
   "2": "Live",
@@ -64,6 +69,10 @@ const BOT_MODES = new Set(["stats", "ticker"]);
 
 function modeLabel(mode) {
   return mode === "ticker" ? "Бегущая строка" : "Статистика матча";
+}
+
+function tickerSizeKey(value) {
+  return TICKER_SIZES[value] ? value : "normal";
 }
 
 export default {
@@ -900,7 +909,7 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
         `Программа: ${PROGRAM_LABELS[program]}`,
         `Режим: ${modeLabel(mode)}`,
         "",
-        "Шаг 4 из 4: выбери скорость бегущей строки."
+        "Шаг 4 из 5: выбери скорость бегущей строки."
       ].join("\n"),
       reply_markup: speedMenu(match, program, mode),
       disable_web_page_preview: true
@@ -928,7 +937,57 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       await answerCallback(env, callbackId, "Скорость не найдена", true);
       return;
     }
+    if (mode === "ticker") {
+      const current = getOverlayCustom(chatId, match.id, program, mode, speed);
+      const sizeKey = tickerSizeKey(current.tickerSize);
+      await replaceFlowMessage(env, chatId, messageId, {
+        text: [
+          matchTitle(match),
+          "",
+          `Программа: ${PROGRAM_LABELS[program]}`,
+          `Режим: ${modeLabel(mode)}`,
+          `Скорость: ${TICKER_SPEEDS[speed].label} (${TICKER_SPEEDS[speed].pixelsPerSecond})`,
+          "",
+          "Шаг 5 из 5: выбери размер бегущей строки."
+        ].join("\n"),
+        reply_markup: tickerSizeMenu(match, program, mode, speed, sizeKey),
+        disable_web_page_preview: true
+      });
+      await answerCallback(env, callbackId);
+      return;
+    }
+
     const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: overlayInstructions(origin, match, program, mode, speed, custom),
+      reply_markup: readyMenu(match, program, mode, speed, custom),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId, "Готово");
+    return;
+  }
+
+  if (data.startsWith("z|")) {
+    const [, matchId, program, mode, speed, size] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    if (!PROGRAM_LABELS[program]) {
+      await answerCallback(env, callbackId, "Программа не найдена", true);
+      return;
+    }
+    if (!BOT_MODES.has(mode)) {
+      await answerCallback(env, callbackId, "Режим не найден", true);
+      return;
+    }
+    if (!TICKER_SPEEDS[speed]) {
+      await answerCallback(env, callbackId, "Скорость не найдена", true);
+      return;
+    }
+    const sizeKey = tickerSizeKey(size);
+    const custom = setOverlayCustom(chatId, match.id, program, mode, speed, { tickerSize: sizeKey });
     await replaceFlowMessage(env, chatId, messageId, {
       text: overlayInstructions(origin, match, program, mode, speed, custom),
       reply_markup: readyMenu(match, program, mode, speed, custom),
@@ -1123,15 +1182,33 @@ function speedMenu(match, program, mode) {
   ]);
 }
 
-function readyMenu(match, program, mode, speed) {
+function tickerSizeMenu(match, program, mode, speed, selectedSize = "normal") {
+  const sizeKey = tickerSizeKey(selectedSize);
+  return keyboard([
+    [
+      button(sizeKey === "normal" ? "Нормальный •" : "Нормальный", `z|${match.id}|${program}|${mode}|${speed}|normal`),
+      button(sizeKey === "small" ? "Маленький •" : "Маленький", `z|${match.id}|${program}|${mode}|${speed}|small`)
+    ],
+    [button("Назад к выбору скорости", `r|${match.id}|${program}|${mode}`)],
+    [button("Назад к выбору программы", `m|${match.id}`)],
+    [button("Назад к матчам", "live")]
+  ]);
+}
+
+function readyMenu(match, program, mode, speed, custom = {}) {
   const rows = [
     [button("Статистика матча", `r|${match.id}|${program}|stats`), button("Бегущая строка", `r|${match.id}|${program}|ticker`)]
   ];
   if (mode === "ticker") {
+    const sizeKey = tickerSizeKey(custom.tickerSize);
     rows.push([
       button("Медленно", `s|${match.id}|${program}|${mode}|slow`),
       button("Средне", `s|${match.id}|${program}|${mode}|normal`),
       button("Быстрее", `s|${match.id}|${program}|${mode}|fast`)
+    ]);
+    rows.push([
+      button(sizeKey === "normal" ? "Нормальный •" : "Нормальный", `z|${match.id}|${program}|${mode}|${speed}|normal`),
+      button(sizeKey === "small" ? "Маленький •" : "Маленький", `z|${match.id}|${program}|${mode}|${speed}|small`)
     ]);
   }
   if (mode === "stats") {
@@ -1300,7 +1377,7 @@ function setOverlayCustom(chatId, matchId, program, mode, speed, patch) {
   const key = overlaySessionKey(chatId, matchId, program, mode, speed);
   const current = getOverlayCustom(chatId, matchId, program, mode, speed);
   const next = { ...current, ...patch };
-  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "homeCountry", "awayCountry", "stage", "homeOdd", "awayOdd"]) {
+  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "homeCountry", "awayCountry", "stage", "homeOdd", "awayOdd", "tickerSize"]) {
     if (!String(next[prop] ?? "").trim()) delete next[prop];
   }
   if (!Object.keys(next).length) {
@@ -1340,7 +1417,8 @@ function customSummaryLines(custom = {}) {
     `Короткие (статистика): ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
     `Страны (табло): ${custom.homeCountry || "авто"} / ${custom.awayCountry || "авто"}`,
     `Стадия: ${custom.stage || "авто"}`,
-    `Коэффициенты: ${custom.homeOdd || "авто"} / ${custom.awayOdd || "авто"}`
+    `Коэффициенты: ${custom.homeOdd || "авто"} / ${custom.awayOdd || "авто"}`,
+    `Размер строки: ${TICKER_SIZES[tickerSizeKey(custom.tickerSize)].label}`
   ];
 }
 
@@ -1694,6 +1772,7 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
   const programKey = PROGRAM_LABELS[program] ? program : "obs";
   const modeKey = BOT_MODES.has(mode) ? mode : "stats";
   const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
+  const sizeKey = tickerSizeKey(custom.tickerSize);
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
   if (modeKey === "ticker") {
     return [
@@ -1703,6 +1782,7 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
       `Программа: ${PROGRAM_LABELS[programKey]}`,
       `Режим: ${modeLabel(modeKey)}`,
       `Скорость: ${TICKER_SPEEDS[speedKey].label} (${TICKER_SPEEDS[speedKey].pixelsPerSecond})`,
+      `Размер: ${TICKER_SIZES[sizeKey].label}`,
       "",
       "URL:",
       url,
@@ -1734,9 +1814,10 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
 function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
   if (mode === "ticker") {
     const tickerSpeed = TICKER_SPEEDS[speed]?.pixelsPerSecond || 100;
+    const tickerSize = TICKER_SIZES[tickerSizeKey(custom.tickerSize)]?.param || "normal";
     const tickerQuery = new URLSearchParams({
       ticker: String(tickerSpeed),
-      height: "normal",
+      height: tickerSize,
       refresh: "60000",
       limit: String(NEWS_LIMIT)
     });
@@ -3512,7 +3593,7 @@ const NEWS_TICKER_JS = `const params = new URLSearchParams(window.location.searc
 
 const TICKER_SPEEDS = { slow: 60, normal: 100, fast: 130 };
 const TICKER_HEIGHTS = {
-  small: { height: 51, fontSize: 32, logoLeft: 16, logoTop: 6, logoWidth: 58, logoHeight: 39, safeLeft: 92, fadeWidth: 64 },
+  small: { height: 51, fontSize: 31, logoLeft: 14, logoTop: 9, logoWidth: 48, logoHeight: 32, safeLeft: 74, fadeWidth: 56 },
   normal: { height: 102, fontSize: 42, logoLeft: 24, logoTop: 18, logoWidth: 116, logoHeight: 78, safeLeft: 150, fadeWidth: 112 },
   large: { height: 128, fontSize: 52, logoLeft: 30, logoTop: 22, logoWidth: 125, logoHeight: 84, safeLeft: 172, fadeWidth: 132 }
 };
