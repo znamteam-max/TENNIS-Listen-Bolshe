@@ -3433,7 +3433,7 @@ const NEWS_TICKER_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Больше! tennis news ticker</title>
-<link rel="stylesheet" href="/news-ticker.css?v=20260529-4">
+<link rel="stylesheet" href="/news-ticker.css?v=20260530-1">
 </head>
 <body>
 <main class="news-ticker-overlay" aria-label="Бегущая строка новостей">
@@ -3446,7 +3446,7 @@ const NEWS_TICKER_HTML = `<!doctype html>
     </div>
   </section>
 </main>
-<script src="/news-ticker.js?v=20260529-4"></script>
+<script src="/news-ticker.js?v=20260530-1"></script>
 </body>
 </html>
 `;
@@ -3499,6 +3499,30 @@ body {
   height: var(--ticker-height);
   overflow: hidden;
   background: url("/news-ticker-bg.png") left bottom / 1920px 1080px no-repeat;
+}
+
+.ticker::before {
+  content: "";
+  position: absolute;
+  left: var(--ticker-logo-left);
+  top: var(--ticker-logo-top);
+  width: var(--ticker-logo-width);
+  height: var(--ticker-logo-height);
+  background: url("/news-ticker-logo.png") center / contain no-repeat;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.news-ticker-overlay.size-small .ticker::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 124px;
+  height: var(--ticker-height);
+  background: url("/news-ticker-bg.png") -220px bottom / 1920px 1080px no-repeat;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .ticker-mask {
@@ -3593,7 +3617,7 @@ const NEWS_TICKER_JS = `const params = new URLSearchParams(window.location.searc
 
 const TICKER_SPEEDS = { slow: 60, normal: 100, fast: 130 };
 const TICKER_HEIGHTS = {
-  small: { height: 51, fontSize: 31, logoLeft: 14, logoTop: 9, logoWidth: 48, logoHeight: 32, safeLeft: 74, fadeWidth: 56 },
+  small: { height: 51, fontSize: 31, logoLeft: 16, logoTop: 10, logoWidth: 46, logoHeight: 31, safeLeft: 72, fadeWidth: 56 },
   normal: { height: 102, fontSize: 42, logoLeft: 24, logoTop: 18, logoWidth: 116, logoHeight: 78, safeLeft: 150, fadeWidth: 112 },
   large: { height: 128, fontSize: 52, logoLeft: 30, logoTop: 22, logoWidth: 125, logoHeight: 84, safeLeft: 172, fadeWidth: 132 }
 };
@@ -3660,6 +3684,7 @@ function tickerHeightConfig() {
 function applyTickerHeight() {
   const size = tickerHeightConfig();
   const root = document.documentElement;
+  const overlay = document.querySelector(".news-ticker-overlay");
   root.style.setProperty("--ticker-height", \`\${size.height}px\`);
   root.style.setProperty("--ticker-font-size", \`\${size.fontSize}px\`);
   root.style.setProperty("--ticker-logo-left", \`\${size.logoLeft}px\`);
@@ -3670,6 +3695,9 @@ function applyTickerHeight() {
   root.style.setProperty("--ticker-fade-width", \`\${size.fadeWidth}px\`);
   root.style.setProperty("--ticker-cta-size", \`\${clampNumber(Math.round(size.fontSize * 1.25), 30, 64)}px\`);
   root.style.setProperty("--ticker-arrow-size", \`\${clampNumber(Math.round(size.fontSize * 1.5), 36, 84)}px\`);
+  if (overlay) {
+    overlay.classList.toggle("size-small", config.height === "small");
+  }
 }
 
 function newsItemsFromPayload(payload) {
