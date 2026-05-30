@@ -570,7 +570,7 @@ async function handleTelegramUpdate(update, env, origin) {
     const chatId = message.chat?.id;
     const textValue = String(message.text || message.caption || "").trim();
     if (!chatId) return;
-    if (message.message_id && textValue.startsWith("/")) {
+    if (message.message_id && textValue) {
       await safeDeleteMessage(env, chatId, message.message_id);
     }
 
@@ -580,11 +580,26 @@ async function handleTelegramUpdate(update, env, origin) {
       if (pending) {
         const parsedPayload = parseReplyEditPayload(pending.block, textValue);
         if (!parsedPayload.ok) {
-          rememberPendingEdit(chatId, replyMessageId, pending);
-          await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
-            text: `Не понял формат ответа. Пришли данные снова в формате: ${parsedPayload.hint || "два значения через запятую"}`,
-            disable_web_page_preview: true
-          });
+          const modeKey = BOT_MODES.has(pending.mode) ? pending.mode : "stats";
+          const speedKey = TICKER_SPEEDS[pending.speed] ? pending.speed : "normal";
+          const match = await findMatch(env, pending.matchId);
+          if (match) {
+            const custom = getOverlayCustom(chatId, match.id, pending.program, modeKey, speedKey);
+            await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+              text: [
+                `Не понял формат ответа. Ожидаю: ${parsedPayload.hint || "два значения через запятую"}.`,
+                "",
+                editMenuText(match, pending.program, modeKey, speedKey, custom)
+              ].join("\n"),
+              reply_markup: editBlocksMenu(match, pending.program, modeKey, speedKey),
+              disable_web_page_preview: true
+            });
+          } else {
+            await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+              text: `Не понял формат ответа. Ожидаю: ${parsedPayload.hint || "два значения через запятую"}.`,
+              disable_web_page_preview: true
+            });
+          }
           return;
         }
 
@@ -1420,6 +1435,7 @@ async function applyEditBlock(env, origin, chatId, parsed, block) {
       "",
       `URL:\n${url}`
     ].join("\n"),
+    reply_markup: editBlocksMenu(match, parsed.program, modeKey, speedKey),
     disable_web_page_preview: true
   });
 }
