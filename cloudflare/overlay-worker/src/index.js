@@ -2394,16 +2394,17 @@ body {
 
 .score-clock {
   position: absolute;
-  left: 1008px;
+  left: 960px;
+  right: 38px;
   top: 17px;
-  width: 320px;
   height: 36px;
-  text-align: left;
+  text-align: right;
   color: #111;
   font-size: 31px;
   line-height: 36px;
   font-weight: 500;
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .score-row {
@@ -3071,6 +3072,22 @@ function formatPlannedStart(unixValue) {
   }
 }
 
+function fitScoreClockText() {
+  const element = refs.scoreClock;
+  if (!element) return;
+
+  let size = 31;
+  element.style.fontSize = size + "px";
+  element.style.lineHeight = "36px";
+
+  const maxWidth = element.clientWidth || 320;
+  while (element.scrollWidth > maxWidth && size > 18) {
+    size -= 1;
+    element.style.fontSize = size + "px";
+    element.style.lineHeight = Math.max(24, Math.round(size * 1.16)) + "px";
+  }
+}
+
 function renderMatch(data) {
   lastMatchData = data;
   const players = data && Array.isArray(data.players) ? data.players : [];
@@ -3092,6 +3109,7 @@ function renderMatch(data) {
   } else {
     refs.scoreClock.textContent = "СКОРО";
   }
+  fitScoreClockText();
 
   const current = resolveCurrentPoints(data || {});
   renderLivePoint(refs.homeLivePoints, current.home);
@@ -3246,6 +3264,7 @@ refs.statsGrid.innerHTML = statHtml();
 refs.overlay.classList.toggle("guides", config.guides);
 refs.tickerTrack.addEventListener("animationend", handleTickerEnd);
 window.addEventListener("resize", () => {
+  fitScoreClockText();
   if (!tickerStarted) return;
   if (ctaTimer) return;
   restartTicker(activeTickerText || "Новости временно недоступны");
