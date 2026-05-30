@@ -8,6 +8,7 @@ const DEFAULT_MATCH_URL =
   "https://www.flashscore.com/match/tennis/jasika-omar-lOWZLw6o/stewart-hamish-0j2A0w2n/?mid=Sril3X2m";
 const TELEGRAM_WEBHOOK_PATH = "/telegram/webhook";
 const NEWS_TICKER_PATH = "/news-ticker.html";
+const NEWS_TICKER_FLEX_PATH = "/news-ticker-flex.html";
 let newsTickerLogoBytes;
 let promoTopLeftJpgBytes;
 const NEWS_LIMIT = 15;
@@ -65,10 +66,12 @@ const overlayCustomBySession = new Map();
 const pendingEditByReply = new Map();
 const flowMessageByChat = new Map();
 
-const BOT_MODES = new Set(["stats", "ticker"]);
+const BOT_MODES = new Set(["stats", "ticker", "ticker_match"]);
 
 function modeLabel(mode) {
-  return mode === "ticker" ? "Бегущая строка" : "Статистика матча";
+  if (mode === "ticker") return "Бегущая строка (гибкая, без плашки)";
+  if (mode === "ticker_match") return "Бегущая строка (для матча, с плашкой)";
+  return "Статистика матча";
 }
 
 function tickerSizeKey(value) {
@@ -81,6 +84,7 @@ export default {
 
     if (url.pathname === "/" || url.pathname === "/overlay.html") return html(OVERLAY_HTML);
     if (url.pathname === NEWS_TICKER_PATH || url.pathname === "/ticker.html") return html(NEWS_TICKER_HTML);
+    if (url.pathname === NEWS_TICKER_FLEX_PATH) return html(NEWS_TICKER_FLEX_HTML);
     if (url.pathname === "/overlay.css") return text(overlayCss(), "text/css; charset=utf-8");
     if (url.pathname === "/overlay.js") return text(OVERLAY_JS, "text/javascript; charset=utf-8");
     if (url.pathname === "/news-ticker.css") return text(newsTickerCss(), "text/css; charset=utf-8");
@@ -134,6 +138,7 @@ export default {
       routes: [
         "/overlay.html",
         NEWS_TICKER_PATH,
+        NEWS_TICKER_FLEX_PATH,
         "/api/health",
         "/api/matches",
         "/api/live-matches",
@@ -902,6 +907,9 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       await answerCallback(env, callbackId, "Ссылка готова");
       return;
     }
+    const speedStepText = mode === "ticker"
+      ? "Шаг 4 из 5: выбери скорость бегущей строки."
+      : "Шаг 4 из 4: выбери скорость бегущей строки.";
     await replaceFlowMessage(env, chatId, messageId, {
       text: [
         matchTitle(match),
@@ -909,7 +917,7 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
         `Программа: ${PROGRAM_LABELS[program]}`,
         `Режим: ${modeLabel(mode)}`,
         "",
-        "Шаг 4 из 5: выбери скорость бегущей строки."
+        speedStepText
       ].join("\n"),
       reply_markup: speedMenu(match, program, mode),
       disable_web_page_preview: true
@@ -957,7 +965,9 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       return;
     }
 
-    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const custom = mode === "ticker_match"
+      ? setOverlayCustom(chatId, match.id, program, mode, speed, { tickerSize: "normal" })
+      : getOverlayCustom(chatId, match.id, program, mode, speed);
     await replaceFlowMessage(env, chatId, messageId, {
       text: overlayInstructions(origin, match, program, mode, speed, custom),
       reply_markup: readyMenu(match, program, mode, speed, custom),
@@ -984,6 +994,10 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     }
     if (!TICKER_SPEEDS[speed]) {
       await answerCallback(env, callbackId, "Скорость не найдена", true);
+      return;
+    }
+    if (mode !== "ticker") {
+      await answerCallback(env, callbackId, "Размер доступен только для гибкой строки", true);
       return;
     }
     const sizeKey = tickerSizeKey(size);
@@ -1122,7 +1136,7 @@ async function liveMenu(env) {
           "Как это работает:",
           "1) Выбираешь live или ближайший матч (на 3 часа вперед).",
           "2) Выбираешь программу (OBS / Streamlabs / vMix).",
-          "3) Выбираешь режим: «Статистика матча» или «Бегущая строка».",
+          "3) Выбираешь режим: «Статистика матча», «Бегущая строка с плашкой СМОТРИ» или «Бегущая строка без плашки».",
           "4) Получаешь готовую ссылку.",
           "",
           "Сейчас нет live и ближайших матчей на 3 часа вперед. Нажми «Обновить список матчей»."
@@ -1163,7 +1177,8 @@ function programMenu(match) {
 function modeMenu(match, program) {
   return keyboard([
     [button("Статистика матча", `r|${match.id}|${program}|stats`)],
-    [button("Бегущая строка", `r|${match.id}|${program}|ticker`)],
+    [button("Бегущая строка с плашкой СМОТРИ", `r|${match.id}|${program}|ticker_match`)],
+    [button("Бегущая строка без плашки (гибкая)", `r|${match.id}|${program}|ticker`)],
     [button("Назад к выбору программы", `m|${match.id}`)],
     [button("Назад к матчам", "live")]
   ]);
@@ -1197,19 +1212,23 @@ function tickerSizeMenu(match, program, mode, speed, selectedSize = "normal") {
 
 function readyMenu(match, program, mode, speed, custom = {}) {
   const rows = [
-    [button("Статистика матча", `r|${match.id}|${program}|stats`), button("Бегущая строка", `r|${match.id}|${program}|ticker`)]
+    [button("Статистика матча", `r|${match.id}|${program}|stats`)],
+    [button("Бегущая строка с плашкой СМОТРИ", `r|${match.id}|${program}|ticker_match`)],
+    [button("Бегущая строка без плашки (гибкая)", `r|${match.id}|${program}|ticker`)]
   ];
-  if (mode === "ticker") {
+  if (mode === "ticker" || mode === "ticker_match") {
     const sizeKey = tickerSizeKey(custom.tickerSize);
     rows.push([
       button("Медленно", `s|${match.id}|${program}|${mode}|slow`),
       button("Средне", `s|${match.id}|${program}|${mode}|normal`),
       button("Быстрее", `s|${match.id}|${program}|${mode}|fast`)
     ]);
-    rows.push([
-      button(sizeKey === "normal" ? "Нормальный •" : "Нормальный", `z|${match.id}|${program}|${mode}|${speed}|normal`),
-      button(sizeKey === "small" ? "Маленький •" : "Маленький", `z|${match.id}|${program}|${mode}|${speed}|small`)
-    ]);
+    if (mode === "ticker") {
+      rows.push([
+        button(sizeKey === "normal" ? "Нормальный •" : "Нормальный", `z|${match.id}|${program}|${mode}|${speed}|normal`),
+        button(sizeKey === "small" ? "Маленький •" : "Маленький", `z|${match.id}|${program}|${mode}|${speed}|small`)
+      ]);
+    }
   }
   if (mode === "stats") {
     rows.push([button("Редактировать блоки", `e|${match.id}|${program}|${mode}|${speed}`)]);
@@ -1774,15 +1793,24 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
   const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
   const sizeKey = tickerSizeKey(custom.tickerSize);
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
-  if (modeKey === "ticker") {
+  if (modeKey === "ticker" || modeKey === "ticker_match") {
+    const tickerLines = [
+      `Скорость: ${TICKER_SPEEDS[speedKey].label} (${TICKER_SPEEDS[speedKey].pixelsPerSecond})`
+    ];
+    if (modeKey === "ticker") {
+      tickerLines.push(`Размер: ${TICKER_SIZES[sizeKey].label}`);
+      tickerLines.push("Плашка СМОТРИ: выключена");
+    } else {
+      tickerLines.push("Размер: Нормальный (фиксированный)");
+      tickerLines.push("Плашка СМОТРИ: включена");
+    }
     return [
       "Готово. Ссылка на бегущую строку собрана.",
       "",
       `Матч для контекста: ${match.home.name} - ${match.away.name}`,
       `Программа: ${PROGRAM_LABELS[programKey]}`,
       `Режим: ${modeLabel(modeKey)}`,
-      `Скорость: ${TICKER_SPEEDS[speedKey].label} (${TICKER_SPEEDS[speedKey].pixelsPerSecond})`,
-      `Размер: ${TICKER_SIZES[sizeKey].label}`,
+      ...tickerLines,
       "",
       "URL:",
       url,
@@ -1818,6 +1846,20 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
     const tickerQuery = new URLSearchParams({
       ticker: String(tickerSpeed),
       height: tickerSize,
+      cta: "0",
+      mode: "flex",
+      refresh: "60000",
+      limit: String(NEWS_LIMIT)
+    });
+    return `${origin}${NEWS_TICKER_FLEX_PATH}?${tickerQuery.toString()}`;
+  }
+  if (mode === "ticker_match") {
+    const tickerSpeed = TICKER_SPEEDS[speed]?.pixelsPerSecond || 100;
+    const tickerQuery = new URLSearchParams({
+      ticker: String(tickerSpeed),
+      height: "normal",
+      cta: "1",
+      mode: "match",
       refresh: "60000",
       limit: String(NEWS_LIMIT)
     });
@@ -3433,7 +3475,7 @@ const NEWS_TICKER_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Больше! tennis news ticker</title>
-<link rel="stylesheet" href="/news-ticker.css?v=20260530-1">
+<link rel="stylesheet" href="/news-ticker.css?v=20260530-2">
 </head>
 <body>
 <main class="news-ticker-overlay" aria-label="Бегущая строка новостей">
@@ -3446,10 +3488,12 @@ const NEWS_TICKER_HTML = `<!doctype html>
     </div>
   </section>
 </main>
-<script src="/news-ticker.js?v=20260530-1"></script>
+<script src="/news-ticker.js?v=20260530-2"></script>
 </body>
 </html>
 `;
+
+const NEWS_TICKER_FLEX_HTML = NEWS_TICKER_HTML;
 
 const NEWS_TICKER_CSS = `@import url("https://fonts.googleapis.com/css2?family=Sofia+Sans:ital,wght@0,400..900;1,400..900&display=swap");
 
@@ -3461,6 +3505,7 @@ const NEWS_TICKER_CSS = `@import url("https://fonts.googleapis.com/css2?family=S
   --ticker-logo-top: 18px;
   --ticker-logo-width: 116px;
   --ticker-logo-height: 78px;
+  --ticker-logo-cover-width: 180px;
   --ticker-safe-left: 150px;
   --ticker-fade-width: 112px;
   --ticker-cta-size: 52px;
@@ -3501,7 +3546,7 @@ body {
   background: url("/news-ticker-bg.png") left bottom / 1920px 1080px no-repeat;
 }
 
-.news-ticker-overlay.size-small .ticker::before {
+.news-ticker-overlay.mode-flex .ticker::before {
   content: "";
   position: absolute;
   left: var(--ticker-logo-left);
@@ -3513,12 +3558,12 @@ body {
   pointer-events: none;
 }
 
-.news-ticker-overlay.size-small .ticker::after {
+.news-ticker-overlay.mode-flex .ticker::after {
   content: "";
   position: absolute;
   left: 0;
   top: 0;
-  width: 124px;
+  width: var(--ticker-logo-cover-width);
   height: var(--ticker-height);
   background: url("/news-ticker-bg.png") -220px bottom / 1920px 1080px no-repeat;
   z-index: 1;
@@ -3625,11 +3670,17 @@ const DEFAULT_TICKER_HEIGHT = 102;
 const DEFAULT_LOGO_ASPECT = 116 / 78;
 const TICKER_CTA_HOLD_MS = 60000;
 const TICKER_SEPARATOR = "   ✦   ";
+const modeFromPath = window.location.pathname.includes("news-ticker-flex") ? "flex" : "match";
+const tickerMode = (params.get("mode") || modeFromPath).toLowerCase();
+const isFlexTicker = tickerMode === "flex";
 
 const config = {
   news: params.get("news") || "/api/news/tennis",
   ticker: params.get("ticker") || params.get("speed") || "100",
-  height: params.get("height") || params.get("size") || params.get("tickerHeight") || "normal",
+  height: isFlexTicker
+    ? (params.get("height") || params.get("size") || params.get("tickerHeight") || "normal")
+    : "normal",
+  ctaEnabled: !isFlexTicker && params.get("cta") !== "0",
   refresh: Number(params.get("refresh") || 60000),
   limit: Math.min(Math.max(Number(params.get("limit") || 15), 1), 15)
 };
@@ -3691,12 +3742,13 @@ function applyTickerHeight() {
   root.style.setProperty("--ticker-logo-top", \`\${size.logoTop}px\`);
   root.style.setProperty("--ticker-logo-width", \`\${size.logoWidth}px\`);
   root.style.setProperty("--ticker-logo-height", \`\${size.logoHeight}px\`);
+  root.style.setProperty("--ticker-logo-cover-width", \`\${Math.max(size.safeLeft + 84, size.logoLeft + size.logoWidth + 40)}px\`);
   root.style.setProperty("--ticker-safe-left", \`\${size.safeLeft}px\`);
   root.style.setProperty("--ticker-fade-width", \`\${size.fadeWidth}px\`);
   root.style.setProperty("--ticker-cta-size", \`\${clampNumber(Math.round(size.fontSize * 1.25), 30, 64)}px\`);
   root.style.setProperty("--ticker-arrow-size", \`\${clampNumber(Math.round(size.fontSize * 1.5), 36, 84)}px\`);
   if (overlay) {
-    overlay.classList.toggle("size-small", config.height === "small");
+    overlay.classList.toggle("mode-flex", isFlexTicker);
   }
 }
 
@@ -3788,6 +3840,10 @@ function switchCycleAfterCta() {
 }
 
 function holdCta() {
+  if (!config.ctaEnabled) {
+    switchCycleAfterCta();
+    return;
+  }
   showCta();
   if (ctaTimer) clearTimeout(ctaTimer);
   ctaTimer = setTimeout(switchCycleAfterCta, TICKER_CTA_HOLD_MS);
@@ -3795,6 +3851,10 @@ function holdCta() {
 
 function handleTickerEnd() {
   if (ctaTimer) return;
+  if (!config.ctaEnabled) {
+    switchCycleAfterCta();
+    return;
+  }
   holdCta();
 }
 
