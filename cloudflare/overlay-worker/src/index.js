@@ -3460,7 +3460,7 @@ body {
 }
 
 .news-ticker-overlay.mode-flex.size-small .ticker {
-  background: url("/news-ticker-bg-small.png") left bottom / 1920px 1080px no-repeat;
+  background: url("/news-ticker-bg-small.png") left top / 1920px 1080px no-repeat;
 }
 
 .news-ticker-overlay.mode-flex .ticker::before {
