@@ -67,6 +67,8 @@ const pendingEditByReply = new Map();
 const flowMessageByChat = new Map();
 
 const BOT_MODES = new Set(["stats", "ticker"]);
+const STATS_DELAY_STEP_SECONDS = 5;
+const STATS_DELAY_MAX_SECONDS = 300;
 
 function modeLabel(mode) {
   if (mode === "ticker") return "Бегущая строка";
@@ -75,6 +77,14 @@ function modeLabel(mode) {
 
 function tickerSizeKey(value) {
   return TICKER_SIZES[value] ? value : "normal";
+}
+
+function statsDelaySeconds(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const rounded = Math.round(numeric);
+  if (rounded <= 0) return 0;
+  return Math.min(rounded, STATS_DELAY_MAX_SECONDS);
 }
 
 export default {
@@ -962,6 +972,41 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     return;
   }
 
+  if (data.startsWith("d|")) {
+    const [, matchId, program, mode, speed, action] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    if (!PROGRAM_LABELS[program]) {
+      await answerCallback(env, callbackId, "Программа не найдена", true);
+      return;
+    }
+    if (mode !== "stats") {
+      await answerCallback(env, callbackId, "Задержка доступна только для статистики матча", true);
+      return;
+    }
+    const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
+    const current = getOverlayCustom(chatId, match.id, program, mode, speedKey);
+    const currentDelay = statsDelaySeconds(current.statsDelaySec);
+    if (action === "show") {
+      await answerCallback(env, callbackId, `Текущая задержка: ${currentDelay} сек`);
+      return;
+    }
+    const delta = action === "dec" ? -STATS_DELAY_STEP_SECONDS : STATS_DELAY_STEP_SECONDS;
+    const nextDelay = statsDelaySeconds(currentDelay + delta);
+    const patch = { statsDelaySec: nextDelay > 0 ? nextDelay : "" };
+    const custom = setOverlayCustom(chatId, match.id, program, mode, speedKey, patch);
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: overlayInstructions(origin, match, program, mode, speedKey, custom),
+      reply_markup: readyMenu(match, program, mode, speedKey, custom),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId, `Задержка: ${nextDelay} сек`);
+    return;
+  }
+
   if (data.startsWith("e|")) {
     const [, matchId, program, mode, speed] = data.split("|");
     const match = await findMatch(env, matchId);
@@ -1160,6 +1205,12 @@ function readyMenu(match, program, mode, speed, custom = {}) {
     ]);
   }
   if (mode === "stats") {
+    const delay = statsDelaySeconds(custom.statsDelaySec);
+    rows.push([
+      button("\u22125 \u0441\u0435\u043a", `d|${match.id}|${program}|${mode}|${speed}|dec`),
+      button("+5 \u0441\u0435\u043a", `d|${match.id}|${program}|${mode}|${speed}|inc`)
+    ]);
+    rows.push([button(`\u0417\u0430\u0434\u0435\u0440\u0436\u043a\u0430 \u0433\u0440\u0430\u0444\u0438\u043a\u0438: ${delay} \u0441\u0435\u043a`, `d|${match.id}|${program}|${mode}|${speed}|show`)]);
     rows.push([button("\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0431\u043b\u043e\u043a\u0438", `e|${match.id}|${program}|${mode}|${speed}`)]);
   }
   rows.push([button("\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0434\u0440\u0443\u0433\u0443\u044e \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0443", `m|${match.id}`)]);
@@ -1325,7 +1376,7 @@ function setOverlayCustom(chatId, matchId, program, mode, speed, patch) {
   const key = overlaySessionKey(chatId, matchId, program, mode, speed);
   const current = getOverlayCustom(chatId, matchId, program, mode, speed);
   const next = { ...current, ...patch };
-  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "homeCountry", "awayCountry", "stage", "homeOdd", "awayOdd", "tickerSize"]) {
+  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "homeCountry", "awayCountry", "stage", "homeOdd", "awayOdd", "tickerSize", "statsDelaySec"]) {
     if (!String(next[prop] ?? "").trim()) delete next[prop];
   }
   if (!Object.keys(next).length) {
@@ -1360,12 +1411,14 @@ function normalizeFreeText(value) {
 }
 
 function customSummaryLines(custom = {}) {
+  const delay = statsDelaySeconds(custom.statsDelaySec);
   return [
     `Фамилии: ${custom.homeName || "авто"} / ${custom.awayName || "авто"}`,
     `Короткие (статистика): ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
     `Страны (табло): ${custom.homeCountry || "авто"} / ${custom.awayCountry || "авто"}`,
     `Стадия: ${custom.stage || "авто"}`,
     `Коэффициенты: ${custom.homeOdd || "авто"} / ${custom.awayOdd || "авто"}`,
+    `Задержка графики: ${delay} сек`,
     `Размер строки: ${TICKER_SIZES[tickerSizeKey(custom.tickerSize)].label}`
   ];
 }
@@ -1721,6 +1774,7 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
   const modeKey = BOT_MODES.has(mode) ? mode : "stats";
   const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
   const sizeKey = tickerSizeKey(custom.tickerSize);
+  const delay = statsDelaySeconds(custom.statsDelaySec);
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
   if (modeKey === "ticker") {
     const tickerLines = [
@@ -1751,6 +1805,7 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
     `Программа: ${PROGRAM_LABELS[programKey]}`,
     `Режим: ${modeLabel(modeKey)}`,
     `Скорость строки: ${TICKER_SPEEDS[speedKey].label} (${TICKER_SPEEDS[speedKey].pixelsPerSecond})`,
+    `Задержка графики: ${delay} сек`,
     "",
     "URL:",
     url,
@@ -1806,6 +1861,8 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
   if (custom.stage) query.set("stage", custom.stage);
   if (custom.homeOdd) query.set("homeOdd", custom.homeOdd);
   if (custom.awayOdd) query.set("awayOdd", custom.awayOdd);
+  const delay = statsDelaySeconds(custom.statsDelaySec);
+  if (delay > 0) query.set("delay", String(delay));
   return `${origin}/overlay.html?${query.toString()}`;
 }
 
@@ -2829,7 +2886,8 @@ const config = {
   homeCountry: params.get("homeCountry") || "",
   awayCountry: params.get("awayCountry") || "",
   homeOdd: params.get("homeOdd") || "",
-  awayOdd: params.get("awayOdd") || ""
+  awayOdd: params.get("awayOdd") || "",
+  delay: params.get("delay") || params.get("delaySec") || "0"
 };
 
 const refs = {
@@ -2862,6 +2920,7 @@ let queuedTickerText = "";
 let tickerStarted = false;
 let ctaTimer = null;
 let newsFetchInFlight = null;
+const matchFrameQueue = [];
 
 function asText(value, fallback) {
   return value === null || value === undefined || value === "" ? fallback : String(value);
@@ -2872,6 +2931,33 @@ function fetchJson(url) {
     if (!response.ok) throw new Error(\`\${response.status} \${response.statusText}\`);
     return response.json();
   });
+}
+
+function statsDelayMs() {
+  const numeric = Number(config.delay);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.min(Math.round(numeric), 300) * 1000;
+}
+
+function flushMatchQueue(now = Date.now()) {
+  while (matchFrameQueue.length && matchFrameQueue[0].readyAt <= now) {
+    const frame = matchFrameQueue.shift();
+    renderMatch(frame.data);
+  }
+}
+
+function queueMatchRender(data) {
+  const delayMs = statsDelayMs();
+  if (delayMs <= 0) {
+    matchFrameQueue.length = 0;
+    renderMatch(data);
+    return;
+  }
+  matchFrameQueue.push({ readyAt: Date.now() + delayMs, data });
+  if (matchFrameQueue.length > 500) {
+    matchFrameQueue.splice(0, matchFrameQueue.length - 500);
+  }
+  flushMatchQueue();
 }
 
 function statHtml() {
@@ -3351,7 +3437,7 @@ function renderOdds(payload) {
 
 async function refreshMatch() {
   try {
-    renderMatch(await fetchJson(config.source));
+    queueMatchRender(await fetchJson(config.source));
   } catch (_error) {
     refs.scoreClock.textContent = "ОШИБКА ДАННЫХ";
   }
@@ -3378,6 +3464,7 @@ window.addEventListener("resize", () => {
 refreshMatch().then(refreshOdds);
 queueNewsRefresh();
 setInterval(refreshMatch, Math.max(config.poll, 1000));
+setInterval(flushMatchQueue, 250);
 setInterval(queueNewsRefresh, 60000);
 setInterval(refreshOdds, 60000);
 `;
