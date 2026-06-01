@@ -65,10 +65,17 @@ const STAGES = {
 const overlayCustomBySession = new Map();
 const pendingEditByReply = new Map();
 const flowMessageByChat = new Map();
+const oddsStateByMatchId = new Map();
+const oddsRefreshByMatchId = new Map();
+const pendingWinlineCandidatesByToken = new Map();
 
 const BOT_MODES = new Set(["stats", "ticker"]);
 const STATS_DELAY_STEP_SECONDS = 5;
 const STATS_DELAY_MAX_SECONDS = 300;
+const WINLINE_POLL_INTERVAL_MS_DEFAULT = 7000;
+const WINLINE_STALE_AFTER_MS_DEFAULT = 60000;
+const WINLINE_REQUEST_TIMEOUT_MS_DEFAULT = 8000;
+const WINLINE_AUTODISCOVER_CONFIDENCE = 0.92;
 
 function modeLabel(mode) {
   if (mode === "ticker") return "Бегущая строка";
@@ -106,6 +113,45 @@ export default {
         return json(await sportsTennisNews(env), 200, { "cache-control": "public, max-age=120" });
       } catch (error) {
         return json(fallbackNews(error), 200, { "cache-control": "public, max-age=30" });
+      }
+    }
+    if (url.pathname === "/api/odds/current" && request.method === "GET") {
+      try {
+        return json(await currentOdds(url, env), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({
+          ok: false,
+          error: error?.message || String(error),
+          matchId: String(url.searchParams.get("matchId") || "").trim() || null
+        }, 500, { "cache-control": "no-store" });
+      }
+    }
+    if (url.pathname === "/api/odds/manual" && request.method === "POST") {
+      try {
+        return json(await setManualOddsFromApi(request), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
+      }
+    }
+    if (url.pathname === "/api/odds/winline/link" && request.method === "POST") {
+      try {
+        return json(await linkWinlineOddsFromApi(request, env), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
+      }
+    }
+    if (url.pathname === "/api/odds/winline/disable" && request.method === "POST") {
+      try {
+        return json(await disableWinlineOddsFromApi(request), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
+      }
+    }
+    if (url.pathname === "/api/odds/push" && request.method === "POST") {
+      try {
+        return json(await pushOddsFromSidecar(request, env), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 403, { "cache-control": "no-store" });
       }
     }
     if (url.pathname === "/api/odds/winline") {
@@ -152,6 +198,11 @@ export default {
         "/api/matches",
         "/api/live-matches",
         "/api/news/tennis",
+        "/api/odds/current?matchId=<flashscoreId>",
+        "/api/odds/manual",
+        "/api/odds/winline/link",
+        "/api/odds/winline/disable",
+        "/api/odds/push",
         "/api/odds/winline",
         "/api/match/flashscore?id=Sril3X2m",
         TELEGRAM_WEBHOOK_PATH
@@ -347,6 +398,411 @@ function cleanOdd(value) {
 
 function normalizeName(value) {
   return String(value || "").toLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
+}
+
+function oddsConfig(env) {
+  return {
+    enabled: String(env?.WINLINE_ODDS_ENABLED || "true").toLowerCase() !== "false",
+    pollIntervalMs: clampNumber(env?.WINLINE_POLL_INTERVAL_MS, WINLINE_POLL_INTERVAL_MS_DEFAULT, 2000, 60000),
+    staleAfterMs: clampNumber(env?.WINLINE_STALE_AFTER_MS, WINLINE_STALE_AFTER_MS_DEFAULT, 5000, 15 * 60 * 1000),
+    requestTimeoutMs: clampNumber(env?.WINLINE_REQUEST_TIMEOUT_MS, WINLINE_REQUEST_TIMEOUT_MS_DEFAULT, 1000, 30000)
+  };
+}
+
+function clampNumber(value, fallback, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(Math.max(Math.round(numeric), min), max);
+}
+
+function timeoutSignal(timeoutMs) {
+  if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") return undefined;
+  return AbortSignal.timeout(timeoutMs);
+}
+
+function oddsMatchKey(raw) {
+  const matchId = String(raw || "").trim();
+  if (!matchId) throw new Error("matchId is required");
+  return matchId.slice(0, 120);
+}
+
+function baseOddsState(matchId) {
+  return {
+    matchId,
+    source: "winline",
+    mode: "off",
+    autoUpdate: false,
+    winlineUrl: "",
+    winlineEventId: "",
+    player1Name: "",
+    player2Name: "",
+    odds: { player1: null, player2: null },
+    updatedAt: null,
+    lastSuccessAt: null,
+    lastError: null,
+    stale: true,
+    lastPolledAt: 0
+  };
+}
+
+function getOddsState(matchIdRaw) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  const existing = oddsStateByMatchId.get(matchId);
+  if (existing) return existing;
+  const created = baseOddsState(matchId);
+  oddsStateByMatchId.set(matchId, created);
+  return created;
+}
+
+function setOddsState(matchIdRaw, patch = {}) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  const current = getOddsState(matchId);
+  const next = {
+    ...current,
+    ...patch,
+    odds: {
+      ...(current.odds || {}),
+      ...((patch && patch.odds) || {})
+    }
+  };
+  oddsStateByMatchId.set(matchId, next);
+  return next;
+}
+
+function parseOddValue(value) {
+  const cleaned = cleanOdd(value);
+  return cleaned === null ? null : cleaned;
+}
+
+function staleOdds(state, env) {
+  if (!state?.lastSuccessAt) return true;
+  const last = Date.parse(state.lastSuccessAt);
+  if (!Number.isFinite(last) || last <= 0) return true;
+  return Date.now() - last > oddsConfig(env).staleAfterMs;
+}
+
+function oddsPayload(state, env) {
+  const home = state?.odds?.player1 ?? null;
+  const away = state?.odds?.player2 ?? null;
+  const stale = staleOdds(state, env);
+  return {
+    ok: true,
+    matchId: state?.matchId || null,
+    source: state?.source || "winline",
+    mode: state?.mode || "off",
+    autoUpdate: Boolean(state?.autoUpdate),
+    odds: {
+      player1: home,
+      player2: away,
+      home,
+      away
+    },
+    updatedAt: state?.updatedAt || null,
+    lastSuccessAt: state?.lastSuccessAt || null,
+    lastError: state?.lastError || null,
+    stale
+  };
+}
+
+function normalizeWinlineUrl(raw) {
+  const textValue = String(raw || "").trim();
+  if (!textValue) throw new Error("winlineUrl is required");
+  let parsed;
+  try {
+    parsed = new URL(textValue);
+  } catch (_error) {
+    throw new Error("Некорректная ссылка Winline");
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (!(host === "winline.ru" || host.endsWith(".winline.ru"))) {
+    throw new Error("Ссылка должна вести на winline.ru");
+  }
+  if (!/^https?:$/i.test(parsed.protocol)) {
+    throw new Error("Поддерживаются только http/https ссылки");
+  }
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+async function fetchOddsByWinlineUrl({ winlineUrl, player1Name = "", player2Name = "", timeoutMs = WINLINE_REQUEST_TIMEOUT_MS_DEFAULT }) {
+  const requestInit = {
+    headers: {
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+      "user-agent": "Mozilla/5.0 (compatible; tennis-listen-bolshe-overlay/1.0)"
+    },
+    cf: { cacheTtl: 5, cacheEverything: false }
+  };
+  const signal = timeoutSignal(timeoutMs);
+  if (signal) requestInit.signal = signal;
+  const response = await fetch(winlineUrl, requestInit);
+  if (!response.ok) {
+    return { ok: false, error: `Winline ${response.status}` };
+  }
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  let parsedOdds = { home: null, away: null };
+  if (contentType.includes("json")) {
+    const payload = await response.json();
+    parsedOdds = extractWinlineOdds(payload, player1Name, player2Name);
+  } else {
+    const htmlValue = await response.text();
+    parsedOdds = extractOddsFromHtml(htmlValue, player1Name, player2Name);
+  }
+  const player1 = parseOddValue(parsedOdds.home);
+  const player2 = parseOddValue(parsedOdds.away);
+  if (!player1 && !player2) {
+    return { ok: false, error: "Не удалось извлечь коэффициенты из страницы Winline" };
+  }
+  return {
+    ok: true,
+    source: winlineUrl,
+    updatedAt: new Date().toISOString(),
+    odds: { player1, player2 }
+  };
+}
+
+async function refreshWinlineOddsState(matchIdRaw, env, options = {}) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  const force = Boolean(options.force);
+  const state = getOddsState(matchId);
+  if (!state.autoUpdate || !state.winlineUrl || !oddsConfig(env).enabled) {
+    return state;
+  }
+
+  const conf = oddsConfig(env);
+  const now = Date.now();
+  if (!force && now - Number(state.lastPolledAt || 0) < conf.pollIntervalMs) {
+    return state;
+  }
+  if (oddsRefreshByMatchId.has(matchId)) {
+    return oddsRefreshByMatchId.get(matchId);
+  }
+
+  const task = (async () => {
+    const startedAt = Date.now();
+    setOddsState(matchId, { lastPolledAt: startedAt });
+    const before = getOddsState(matchId);
+    const fetched = await fetchOddsByWinlineUrl({
+      winlineUrl: before.winlineUrl,
+      player1Name: before.player1Name,
+      player2Name: before.player2Name,
+      timeoutMs: conf.requestTimeoutMs
+    });
+    if (fetched.ok) {
+      return setOddsState(matchId, {
+        source: "winline",
+        mode: before.mode === "discovered" ? "discovered" : "url",
+        autoUpdate: true,
+        odds: fetched.odds,
+        updatedAt: fetched.updatedAt,
+        lastSuccessAt: fetched.updatedAt,
+        lastError: null,
+        stale: false
+      });
+    }
+
+    const current = getOddsState(matchId);
+    const stale = staleOdds(current, env);
+    return setOddsState(matchId, {
+      updatedAt: new Date().toISOString(),
+      lastError: fetched.error || "Winline unavailable",
+      stale
+    });
+  })()
+    .catch((error) => {
+      const current = getOddsState(matchId);
+      const stale = staleOdds(current, env);
+      return setOddsState(matchId, {
+        updatedAt: new Date().toISOString(),
+        lastError: error?.message || String(error),
+        stale
+      });
+    })
+    .finally(() => {
+      oddsRefreshByMatchId.delete(matchId);
+    });
+
+  oddsRefreshByMatchId.set(matchId, task);
+  return task;
+}
+
+async function currentOdds(url, env) {
+  const rawMatchId = String(url.searchParams.get("matchId") || url.searchParams.get("eventId") || "").trim();
+  const player1Name = normalizeFreeText(url.searchParams.get("home") || url.searchParams.get("player1") || "");
+  const player2Name = normalizeFreeText(url.searchParams.get("away") || url.searchParams.get("player2") || "");
+  const winlineUrl = String(url.searchParams.get("winlineUrl") || url.searchParams.get("matchUrl") || "").trim();
+  const manual1 = parseOddValue(url.searchParams.get("homeOdd") || url.searchParams.get("player1Odd"));
+  const manual2 = parseOddValue(url.searchParams.get("awayOdd") || url.searchParams.get("player2Odd"));
+  if (!rawMatchId) {
+    return {
+      ok: true,
+      matchId: null,
+      source: manual1 || manual2 ? "manual" : "winline",
+      mode: manual1 || manual2 ? "manual" : "off",
+      autoUpdate: false,
+      odds: {
+        player1: manual1,
+        player2: manual2,
+        home: manual1,
+        away: manual2
+      },
+      updatedAt: manual1 || manual2 ? new Date().toISOString() : null,
+      lastSuccessAt: manual1 || manual2 ? new Date().toISOString() : null,
+      lastError: null,
+      stale: true
+    };
+  }
+
+  const matchId = oddsMatchKey(rawMatchId);
+  let state = getOddsState(matchId);
+
+  if (player1Name || player2Name || winlineUrl) {
+    state = setOddsState(matchId, {
+      player1Name: player1Name || state.player1Name,
+      player2Name: player2Name || state.player2Name,
+      winlineUrl: winlineUrl || state.winlineUrl
+    });
+  }
+
+  if (manual1 || manual2) {
+    const timestamp = new Date().toISOString();
+    state = setOddsState(matchId, {
+      source: "manual",
+      mode: "manual",
+      autoUpdate: false,
+      odds: {
+        player1: manual1 || state.odds.player1 || null,
+        player2: manual2 || state.odds.player2 || null
+      },
+      updatedAt: timestamp,
+      lastSuccessAt: timestamp,
+      lastError: null,
+      stale: false
+    });
+  } else if (state.autoUpdate && state.winlineUrl) {
+    state = await refreshWinlineOddsState(matchId, env);
+  }
+
+  return oddsPayload(state, env);
+}
+
+async function readRequestJson(request) {
+  let payload = null;
+  try {
+    payload = await request.json();
+  } catch (_error) {
+    throw new Error("Invalid JSON body");
+  }
+  if (!payload || typeof payload !== "object") throw new Error("JSON body is required");
+  return payload;
+}
+
+async function setManualOddsFromApi(request) {
+  const payload = await readRequestJson(request);
+  const matchId = oddsMatchKey(payload.matchId);
+  const player1 = parseOddValue(payload.player1 ?? payload.home ?? payload.homeOdd);
+  const player2 = parseOddValue(payload.player2 ?? payload.away ?? payload.awayOdd);
+  if (!player1 && !player2) throw new Error("At least one odd is required");
+  const current = getOddsState(matchId);
+  const timestamp = String(payload.updatedAt || "").trim() || new Date().toISOString();
+  const state = setOddsState(matchId, {
+    source: "manual",
+    mode: "manual",
+    autoUpdate: false,
+    odds: {
+      player1: player1 || current.odds.player1 || null,
+      player2: player2 || current.odds.player2 || null
+    },
+    updatedAt: timestamp,
+    lastSuccessAt: timestamp,
+    lastError: null,
+    stale: false
+  });
+  return oddsPayload(state, null);
+}
+
+async function linkWinlineOdds(matchIdRaw, winlineUrlRaw, env, context = {}) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  const winlineUrl = normalizeWinlineUrl(winlineUrlRaw);
+  const current = getOddsState(matchId);
+  let state = setOddsState(matchId, {
+    source: "winline",
+    mode: context.mode || "url",
+    autoUpdate: true,
+    winlineUrl,
+    winlineEventId: normalizeFreeText(context.winlineEventId || current.winlineEventId || ""),
+    player1Name: normalizeFreeText(context.player1Name || current.player1Name || ""),
+    player2Name: normalizeFreeText(context.player2Name || current.player2Name || ""),
+    lastError: null
+  });
+  state = await refreshWinlineOddsState(matchId, env, { force: true });
+  return oddsPayload(state, env);
+}
+
+async function linkWinlineOddsFromApi(request, env) {
+  const payload = await readRequestJson(request);
+  const matchId = oddsMatchKey(payload.matchId);
+  return linkWinlineOdds(matchId, payload.winlineUrl, env, {
+    mode: "url",
+    winlineEventId: payload.winlineEventId,
+    player1Name: payload.player1Name,
+    player2Name: payload.player2Name
+  });
+}
+
+async function disableWinlineOddsFromApi(request) {
+  const payload = await readRequestJson(request);
+  const matchId = oddsMatchKey(payload.matchId);
+  const current = getOddsState(matchId);
+  const state = setOddsState(matchId, {
+    source: current.source || "manual",
+    mode: "off",
+    autoUpdate: false,
+    updatedAt: new Date().toISOString(),
+    lastError: null
+  });
+  return oddsPayload(state, null);
+}
+
+async function pushOddsFromSidecar(request, env) {
+  const expectedSecret = String(env?.ODDS_SERVICE_SECRET || "").trim();
+  if (expectedSecret) {
+    const headerSecret = String(request.headers.get("x-odds-secret") || "").trim();
+    if (!headerSecret || headerSecret !== expectedSecret) throw new Error("forbidden");
+  }
+  const payload = await readRequestJson(request);
+  const matchId = oddsMatchKey(payload.matchId);
+  const player1 = parseOddValue(payload.player1 ?? payload.home ?? payload.homeOdd);
+  const player2 = parseOddValue(payload.player2 ?? payload.away ?? payload.awayOdd);
+  if (!player1 && !player2) throw new Error("At least one odd is required");
+  const current = getOddsState(matchId);
+  const timestamp = String(payload.updatedAt || "").trim() || new Date().toISOString();
+  const state = setOddsState(matchId, {
+    source: payload.source || "winline",
+    mode: current.mode === "manual" ? "manual" : current.mode || "url",
+    autoUpdate: current.mode === "manual" ? false : true,
+    odds: {
+      player1: player1 || current.odds.player1 || null,
+      player2: player2 || current.odds.player2 || null
+    },
+    updatedAt: timestamp,
+    lastSuccessAt: timestamp,
+    lastError: null,
+    stale: false
+  });
+  return oddsPayload(state, env);
+}
+
+function oddsSummary(custom = {}, oddsState = null) {
+  const sourceLabel = oddsState
+    ? `${oddsState.mode || "off"}${oddsState.autoUpdate ? ", авто" : ", ручной"}`
+    : custom.homeOdd || custom.awayOdd
+      ? "manual, ручной"
+      : "авто";
+  return {
+    home: custom.homeOdd || oddsState?.odds?.player1 || "авто",
+    away: custom.awayOdd || oddsState?.odds?.player2 || "авто",
+    mode: sourceLabel
+  };
 }
 
 async function sportsTennisNews(env) {
@@ -604,6 +1060,35 @@ async function handleTelegramUpdate(update, env, origin) {
     if (replyMessageId && textValue) {
       const pending = consumePendingEdit(chatId, replyMessageId);
       if (pending) {
+        if (pending.block === "winline_url") {
+          const parsedLink = parseWinlineUrlInput(textValue);
+          if (!parsedLink.ok) {
+            const modeKey = BOT_MODES.has(pending.mode) ? pending.mode : "stats";
+            const speedKey = TICKER_SPEEDS[pending.speed] ? pending.speed : "normal";
+            const match = await findMatch(env, pending.matchId);
+            const custom = match ? getOverlayCustom(chatId, match.id, pending.program, modeKey, speedKey) : {};
+            await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+              text: [
+                "Не вижу корректную ссылку Winline.",
+                "Пришли URL вида https://winline.ru/... на конкретный матч.",
+                "",
+                match ? editMenuText(match, pending.program, modeKey, speedKey, custom) : ""
+              ].filter(Boolean).join("\n"),
+              reply_markup: match ? winlineMenu(match, pending.program, modeKey, speedKey) : undefined,
+              disable_web_page_preview: true
+            });
+            return;
+          }
+          await applyWinlineLinkFromChat(env, origin, chatId, {
+            matchId: pending.matchId,
+            program: pending.program,
+            mode: pending.mode,
+            speed: pending.speed,
+            winlineUrl: parsedLink.winlineUrl
+          });
+          return;
+        }
+
         const parsedPayload = parseReplyEditPayload(pending.block, textValue);
         if (!parsedPayload.ok) {
           const modeKey = BOT_MODES.has(pending.mode) ? pending.mode : "stats";
@@ -1025,6 +1510,204 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     }
   }
 
+  if (data.startsWith("ow|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    const modeKey = BOT_MODES.has(mode) ? mode : "stats";
+    const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
+    const custom = getOverlayCustom(chatId, match.id, program, modeKey, speedKey);
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: winlineMenuText(match, program, modeKey, speedKey, custom, getOddsState(match.id)),
+      reply_markup: winlineMenu(match, program, modeKey, speedKey),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("owl|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    const prompt = await replaceFlowMessage(env, chatId, messageId, {
+      text: [
+        "Пришли ссылку на конкретный матч Winline.",
+        "Я привяжу её к этому матчу и начну автообновление коэффициентов."
+      ].join("\n"),
+      reply_markup: { force_reply: true, selective: true },
+      disable_web_page_preview: true
+    });
+    const replyMessageId = prompt?.result?.message_id;
+    if (replyMessageId) {
+      rememberPendingEdit(chatId, replyMessageId, { matchId, program, mode, speed, block: "winline_url" });
+    }
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("owm|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const prompt = await replaceFlowMessage(env, chatId, messageId, {
+      text: [
+        "Ручной ввод коэффициентов (fallback).",
+        "",
+        editBlockPrompt("eo", match, program, mode, speed, custom)
+      ].join("\n"),
+      reply_markup: { force_reply: true, selective: true },
+      disable_web_page_preview: true
+    });
+    const replyMessageId = prompt?.result?.message_id;
+    if (replyMessageId) {
+      rememberPendingEdit(chatId, replyMessageId, { matchId, program, mode, speed, block: "odds" });
+    }
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("owr|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    const state = getOddsState(match.id);
+    if (!state.winlineUrl || !state.autoUpdate) {
+      await answerCallback(env, callbackId, "Сначала подключи ссылку Winline", true);
+      return;
+    }
+    const refreshed = await refreshWinlineOddsState(match.id, env, { force: true });
+    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: winlineMenuText(match, program, mode, speed, custom, refreshed),
+      reply_markup: winlineMenu(match, program, mode, speed),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId, refreshed.lastError ? "Есть ошибка обновления" : "Обновлено");
+    return;
+  }
+
+  if (data.startsWith("owx|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    const state = setOddsState(match.id, {
+      autoUpdate: false,
+      mode: "off",
+      updatedAt: new Date().toISOString(),
+      lastError: null
+    });
+    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: winlineMenuText(match, program, mode, speed, custom, state),
+      reply_markup: winlineMenu(match, program, mode, speed),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId, "Автообновление отключено");
+    return;
+  }
+
+  if (data.startsWith("owa|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
+      return;
+    }
+    const candidate = await discoverWinlineCandidate(match, env);
+    if (!candidate || !candidate.winlineUrl) {
+      await answerCallback(env, callbackId, "Не нашёл надёжный матч. Лучше вставить ссылку вручную.", true);
+      return;
+    }
+    if (candidate.confidence < WINLINE_AUTODISCOVER_CONFIDENCE) {
+      await answerCallback(env, callbackId, "Нашёл слабое совпадение. Лучше вставь ссылку вручную.", true);
+      return;
+    }
+    const token = createWinlineCandidateToken();
+    pendingWinlineCandidatesByToken.set(token, {
+      createdAt: Date.now(),
+      matchId: match.id,
+      program,
+      mode,
+      speed,
+      winlineUrl: candidate.winlineUrl,
+      player1Odd: candidate.odds.player1 || null,
+      player2Odd: candidate.odds.player2 || null
+    });
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: [
+        "Нашёл похожий матч Winline.",
+        "",
+        `${match.home.name} — ${match.away.name}`,
+        `Кэфы: ${candidate.odds.player1 || "—"} / ${candidate.odds.player2 || "—"}`,
+        "",
+        "Подключить?"
+      ].join("\n"),
+      reply_markup: winlineCandidateMenu(token, match, program, mode, speed),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("owy|")) {
+    const [, token] = data.split("|");
+    const candidate = pendingWinlineCandidatesByToken.get(token);
+    pendingWinlineCandidatesByToken.delete(token);
+    if (!candidate) {
+      await answerCallback(env, callbackId, "Сессия подтверждения устарела. Запусти поиск заново.", true);
+      return;
+    }
+    const match = await findMatch(env, candidate.matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже недоступен", true);
+      return;
+    }
+    await applyWinlineLinkFromChat(env, origin, chatId, {
+      matchId: candidate.matchId,
+      program: candidate.program,
+      mode: candidate.mode,
+      speed: candidate.speed,
+      winlineUrl: candidate.winlineUrl,
+      skipMatchLookup: match
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("own|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже недоступен", true);
+      return;
+    }
+    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: winlineMenuText(match, program, mode, speed, custom, getOddsState(match.id)),
+      reply_markup: winlineMenu(match, program, mode, speed),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId);
+    return;
+  }
+
   if (data.startsWith("en|") || data.startsWith("ec|") || data.startsWith("eg|") || data.startsWith("es|") || data.startsWith("eo|")) {
     const [block, matchId, program, mode, speed] = data.split("|");
     const match = await findMatch(env, matchId);
@@ -1434,7 +2117,8 @@ function editMenuText(match, program, mode, speed, custom = {}) {
     "",
     ...customSummaryLines(custom),
     "",
-    "Выбери блок ниже: бот пришлет сообщение, на которое нужно ответить в нужном формате."
+    "Выбери блок ниже: бот пришлет сообщение, на которое нужно ответить в нужном формате.",
+    "Для автообновления коэффициентов открой «🎰 Кэфы Winline»."
   ].join("\n");
 }
 
@@ -1443,6 +2127,7 @@ function editBlocksMenu(match, program, mode, speed) {
     [button("Фамилии", `en|${match.id}|${program}|${mode}|${speed}`), button("Короткие", `ec|${match.id}|${program}|${mode}|${speed}`)],
     [button("Страны", `eg|${match.id}|${program}|${mode}|${speed}`), button("Стадия", `es|${match.id}|${program}|${mode}|${speed}`)],
     [button("Коэффициенты", `eo|${match.id}|${program}|${mode}|${speed}`)],
+    [button("🎰 Кэфы Winline", `ow|${match.id}|${program}|${mode}|${speed}`)],
     [button("Назад", `r|${match.id}|${program}|${mode}`)],
     [button("К live матчам", "live")]
   ]);
@@ -1533,6 +2218,147 @@ function editBlockPrompt(block, match, program, mode, speed, custom = {}) {
   ].join("\n");
 }
 
+function winlineMenu(match, program, mode, speed) {
+  return keyboard([
+    [button("🔗 Вставить ссылку на матч Winline", `owl|${match.id}|${program}|${mode}|${speed}`)],
+    [button("🔍 Найти матч автоматически", `owa|${match.id}|${program}|${mode}|${speed}`)],
+    [button("✍️ Ввести кэфы вручную", `owm|${match.id}|${program}|${mode}|${speed}`)],
+    [button("🔄 Обновить сейчас", `owr|${match.id}|${program}|${mode}|${speed}`)],
+    [button("⛔ Отключить автообновление", `owx|${match.id}|${program}|${mode}|${speed}`)],
+    [button("⬅️ Назад", `e|${match.id}|${program}|${mode}|${speed}`)]
+  ]);
+}
+
+function winlineMenuText(match, program, mode, speed, custom = {}, state = null) {
+  const oddsState = state || getOddsState(match.id);
+  const summary = oddsSummary(custom, oddsState);
+  const stale = staleOdds(oddsState, null) ? "да" : "нет";
+  const link = oddsState.winlineUrl ? truncate(oddsState.winlineUrl, 130) : "не подключена";
+  const auto = oddsState.autoUpdate ? "включено" : "выключено";
+  return [
+    "🎰 Кэфы Winline",
+    "",
+    "Выбери способ подключения:",
+    "",
+    `${match.home.name} — ${match.away.name}`,
+    `Программа: ${PROGRAM_LABELS[program] || program}`,
+    `Режим: ${modeLabel(mode)}`,
+    "",
+    `Источник: ${summary.mode}`,
+    `Текущие кэфы: ${summary.home} / ${summary.away}`,
+    `Автообновление: ${auto}`,
+    `Ссылка Winline: ${link}`,
+    `Stale: ${stale}`,
+    oddsState.lastError ? `Ошибка: ${oddsState.lastError}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function parseWinlineUrlInput(textValue) {
+  const direct = String(textValue || "").trim();
+  const extracted = direct.match(/https?:\/\/[^\s]+/i)?.[0] || direct;
+  if (!extracted) return { ok: false };
+  try {
+    return { ok: true, winlineUrl: normalizeWinlineUrl(extracted) };
+  } catch (_error) {
+    return { ok: false };
+  }
+}
+
+async function applyWinlineLinkFromChat(env, origin, chatId, parsed) {
+  const match = parsed.skipMatchLookup || await findMatch(env, parsed.matchId);
+  if (!match) {
+    await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+      text: "Матч не найден или уже исчез из live-списка. Выбери его заново через /start.",
+      disable_web_page_preview: true
+    });
+    return;
+  }
+  if (!PROGRAM_LABELS[parsed.program]) {
+    await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+      text: "Неверная программа. Используй obs, streamlabs или vmix.",
+      disable_web_page_preview: true
+    });
+    return;
+  }
+
+  const modeKey = BOT_MODES.has(parsed.mode) ? parsed.mode : "stats";
+  const speedKey = TICKER_SPEEDS[parsed.speed] ? parsed.speed : "normal";
+  let state = null;
+  try {
+    state = await linkWinlineOdds(match.id, parsed.winlineUrl, env, {
+      mode: "url",
+      winlineEventId: match.id,
+      player1Name: match.home?.name || "",
+      player2Name: match.away?.name || ""
+    });
+  } catch (error) {
+    const customError = getOverlayCustom(chatId, match.id, parsed.program, modeKey, speedKey);
+    await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+      text: [
+        "⚠️ Не получилось подключить Winline.",
+        error?.message || String(error),
+        "",
+        winlineMenuText(match, parsed.program, modeKey, speedKey, customError, getOddsState(match.id))
+      ].join("\n"),
+      reply_markup: winlineMenu(match, parsed.program, modeKey, speedKey),
+      disable_web_page_preview: true
+    });
+    return;
+  }
+
+  const custom = getOverlayCustom(chatId, match.id, parsed.program, modeKey, speedKey);
+  const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+  await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
+    text: [
+      "✅ Матч Winline подключён.",
+      "",
+      `Текущие кэфы: ${state.odds.player1 || "—"} / ${state.odds.player2 || "—"}`,
+      state.lastError ? `⚠️ ${state.lastError}` : "Автообновление включено.",
+      "",
+      `URL:\n${url}`,
+      "",
+      winlineMenuText(match, parsed.program, modeKey, speedKey, custom, getOddsState(match.id))
+    ].join("\n"),
+    reply_markup: winlineMenu(match, parsed.program, modeKey, speedKey),
+    disable_web_page_preview: true
+  });
+}
+
+async function discoverWinlineCandidate(match, env) {
+  const candidateUrl = `https://winline.ru/stavki/sport/tennis/atp/rolan_garros/${match.id}`;
+  const fetched = await fetchOddsByWinlineUrl({
+    winlineUrl: candidateUrl,
+    player1Name: match.home?.name || "",
+    player2Name: match.away?.name || "",
+    timeoutMs: oddsConfig(env).requestTimeoutMs
+  }).catch(() => ({ ok: false }));
+  if (!fetched?.ok) return null;
+  const fullPair = Boolean(fetched.odds.player1 && fetched.odds.player2);
+  return {
+    winlineUrl: candidateUrl,
+    odds: fetched.odds,
+    confidence: fullPair ? 0.94 : 0.6
+  };
+}
+
+function createWinlineCandidateToken() {
+  const now = Date.now();
+  for (const [token, item] of pendingWinlineCandidatesByToken.entries()) {
+    if (!item?.createdAt || now - item.createdAt > 10 * 60 * 1000) {
+      pendingWinlineCandidatesByToken.delete(token);
+    }
+  }
+  return `${Math.random().toString(36).slice(2, 8)}${(now % 1e5).toString(36)}`;
+}
+
+function winlineCandidateMenu(token, match, program, mode, speed) {
+  return keyboard([
+    [button("✅ Да, подключить", `owy|${token}`)],
+    [button("❌ Нет, вставить ссылку", `owl|${match.id}|${program}|${mode}|${speed}`)],
+    [button("⬅️ Назад", `own|${match.id}|${program}|${mode}|${speed}`)]
+  ]);
+}
+
 async function applyEditBlock(env, origin, chatId, parsed, block) {
   const match = await findMatch(env, parsed.matchId);
   if (!match) {
@@ -1568,6 +2394,22 @@ async function applyEditBlock(env, origin, chatId, parsed, block) {
   } else if (block === "odds") {
     patch.homeOdd = parsed.homeOdd;
     patch.awayOdd = parsed.awayOdd;
+    const timestamp = new Date().toISOString();
+    setOddsState(match.id, {
+      source: "manual",
+      mode: "manual",
+      autoUpdate: false,
+      player1Name: match.home?.name || "",
+      player2Name: match.away?.name || "",
+      odds: {
+        player1: parsed.homeOdd || null,
+        player2: parsed.awayOdd || null
+      },
+      updatedAt: timestamp,
+      lastSuccessAt: timestamp,
+      lastError: null,
+      stale: false
+    });
   }
 
   const custom = setOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey, patch);
@@ -1836,18 +2678,19 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
   const source = `/api/match/flashscore?${sourceQuery}`;
   const newsSource = "/api/news/tennis";
   const oddsQuery = new URLSearchParams({
+    matchId: match.id || "",
     home: match.home?.name || "",
-    away: match.away?.name || "",
-    eventId: match.id || ""
+    away: match.away?.name || ""
   });
   if (custom.homeOdd) oddsQuery.set("homeOdd", custom.homeOdd);
   if (custom.awayOdd) oddsQuery.set("awayOdd", custom.awayOdd);
-  const oddsSource = `/api/odds/winline?${oddsQuery.toString()}`;
+  const oddsSource = `/api/odds/current?${oddsQuery.toString()}`;
   const tickerSpeed = TICKER_SPEEDS[speed]?.pixelsPerSecond || 100;
   const query = new URLSearchParams({
     source,
     news: newsSource,
     odds: oddsSource,
+    matchId: match.id || "",
     panel: mode,
     ticker: String(tickerSpeed),
     poll: "3000"
@@ -2893,6 +3736,7 @@ const config = {
   source: params.get("source") || "/api/match/flashscore?id=Sril3X2m",
   news: params.get("news") || "/api/news/tennis",
   odds: params.get("odds") || "",
+  matchId: params.get("matchId") || "",
   winline: params.get("winline") || "",
   ticker: params.get("ticker") || params.get("tickerSpeed") || "100",
   poll: Number(params.get("poll") || 3000),
@@ -3504,27 +4348,34 @@ function handleTickerEnd() {
 
 function oddsUrl() {
   if (config.odds) return config.odds;
+  if (config.matchId) {
+    const url = new URL("/api/odds/current", window.location.origin);
+    url.searchParams.set("matchId", config.matchId);
+    return \`\${url.pathname}\${url.search}\`;
+  }
   const players = lastMatchData && Array.isArray(lastMatchData.players) ? lastMatchData.players : [];
   const homePlayer = players.find((player) => player.side === "home") || {};
   const awayPlayer = players.find((player) => player.side === "away") || {};
   const home = homePlayer.name || "";
   const away = awayPlayer.name || "";
-  const url = new URL("/api/odds/winline", window.location.origin);
+  const url = new URL("/api/odds/current", window.location.origin);
+  if (lastMatchData && lastMatchData.source && lastMatchData.source.eventId) {
+    url.searchParams.set("matchId", lastMatchData.source.eventId);
+  }
   url.searchParams.set("home", home);
   url.searchParams.set("away", away);
   if (config.winline) url.searchParams.set("matchUrl", config.winline);
   if (config.homeOdd) url.searchParams.set("homeOdd", config.homeOdd);
   if (config.awayOdd) url.searchParams.set("awayOdd", config.awayOdd);
-  if (lastMatchData && lastMatchData.source && lastMatchData.source.eventId) {
-    url.searchParams.set("eventId", lastMatchData.source.eventId);
-  }
   return \`\${url.pathname}\${url.search}\`;
 }
 
 function renderOdds(payload) {
   const odds = payload && payload.odds ? payload.odds : {};
-  refs.homeOdds.textContent = odds.home || "--";
-  refs.awayOdds.textContent = odds.away || "--";
+  const home = odds.home ?? odds.player1 ?? null;
+  const away = odds.away ?? odds.player2 ?? null;
+  refs.homeOdds.textContent = home || "--";
+  refs.awayOdds.textContent = away || "--";
 }
 
 async function refreshMatch() {
@@ -3558,7 +4409,7 @@ queueNewsRefresh();
 setInterval(refreshMatch, Math.max(config.poll, 1000));
 setInterval(flushMatchQueue, 250);
 setInterval(queueNewsRefresh, 60000);
-setInterval(refreshOdds, 60000);
+setInterval(refreshOdds, 2000);
 `;
 
 const NEWS_TICKER_HTML = `<!doctype html>
