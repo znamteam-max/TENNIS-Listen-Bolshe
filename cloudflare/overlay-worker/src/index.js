@@ -2717,10 +2717,10 @@ body {
 
 .tie-break-index {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: -7px;
+  right: -5px;
   color: #111;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 900;
   line-height: 1;
   pointer-events: none;
