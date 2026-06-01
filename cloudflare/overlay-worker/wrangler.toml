@@ -1,3 +1,8 @@
 name = "tennis-listen-bolshe-overlay"
 main = "src/index.js"
 compatibility_date = "2025-05-08"
+
+[[kv_namespaces]]
+binding = "ODDS_KV"
+id = "1faf6570a1b64769ba8cce57c15d1c7c"
+preview_id = "2a7d728511a746e7848a8c6eec5b9d7e"

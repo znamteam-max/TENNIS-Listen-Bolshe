@@ -6,6 +6,7 @@ const SPORTS_TENNIS_NEWS_URL = "https://www.sports.ru/tennis/news/top/";
 const DEFAULT_MATCH_ID = "Sril3X2m";
 const DEFAULT_MATCH_URL =
   "https://www.flashscore.com/match/tennis/jasika-omar-lOWZLw6o/stewart-hamish-0j2A0w2n/?mid=Sril3X2m";
+const BUILD_VERSION = "winline-odds-sanitize-v3-2026-06-01";
 const TELEGRAM_WEBHOOK_PATH = "/telegram/webhook";
 const NEWS_TICKER_PATH = "/news-ticker.html";
 const NEWS_TICKER_FLEX_PATH = "/news-ticker-flex.html";
@@ -68,6 +69,7 @@ const flowMessageByChat = new Map();
 const oddsStateByMatchId = new Map();
 const oddsRefreshByMatchId = new Map();
 const pendingWinlineCandidatesByToken = new Map();
+const ODDS_KV_PREFIX = "odds-state:";
 
 const BOT_MODES = new Set(["stats", "ticker"]);
 const STATS_DELAY_STEP_SECONDS = 5;
@@ -76,6 +78,42 @@ const WINLINE_POLL_INTERVAL_MS_DEFAULT = 7000;
 const WINLINE_STALE_AFTER_MS_DEFAULT = 60000;
 const WINLINE_REQUEST_TIMEOUT_MS_DEFAULT = 8000;
 const WINLINE_AUTODISCOVER_CONFIDENCE = 0.92;
+const WINLINE_KNOWN_BAD_ODDS = { player1: 16.23, player2: 91.93 };
+const WINLINE_MARKET_POSITIVE_PATTERNS = [
+  "\u0438\u0441\u0445\u043e\u0434 12 \u043c\u0430\u0442\u0447",
+  "\u0438\u0441\u0445\u043e\u0434 12",
+  "\u0438\u0441\u0445\u043e\u0434 \u043c\u0430\u0442\u0447\u0430",
+  "\u0438\u0441\u0445\u043e\u0434",
+  "\u043f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u044c \u043c\u0430\u0442\u0447\u0430",
+  "\u043f\u043e\u0431\u0435\u0434\u0438\u0442\u0435\u043b\u044c",
+  "\u043f\u043e\u0431\u0435\u0434\u0430 \u0432 \u043c\u0430\u0442\u0447\u0435",
+  "\u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0438\u0441\u0445\u043e\u0434",
+  "1x2",
+  "match winner",
+  "winner"
+];
+const WINLINE_MARKET_BANNED_PATTERNS = [
+  "\u0441\u0435\u0442",
+  "\u0433\u0435\u0439\u043c",
+  "\u043e\u0447\u043a\u043e",
+  "\u0442\u0430\u0439",
+  "\u0442\u0430\u0439 \u0431\u0440\u0435\u0439\u043a",
+  "\u0444\u043e\u0440\u0430",
+  "\u0442\u043e\u0442\u0430\u043b",
+  "\u0442\u043e\u0447\u043d\u044b\u0439",
+  "\u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439",
+  "\u0431\u0440\u0435\u0439\u043a",
+  "set",
+  "game",
+  "point",
+  "tie break",
+  "handicap",
+  "total",
+  "next",
+  "break"
+];
+const WINLINE_OUTCOME_HOME_MARKERS = ["1", "p1", "home", "first", "team1", "player1", "\u043f1", "\u043f\u0435\u0440\u0432\u044b\u0439"];
+const WINLINE_OUTCOME_AWAY_MARKERS = ["2", "p2", "away", "second", "team2", "player2", "\u043f2", "\u0432\u0442\u043e\u0440\u043e\u0439"];
 
 function modeLabel(mode) {
   if (mode === "ticker") return "Бегущая строка";
@@ -107,7 +145,7 @@ export default {
     if (url.pathname === "/news-ticker.js") return text(NEWS_TICKER_JS, "text/javascript; charset=utf-8");
     if (url.pathname === "/news-ticker-logo.png") return png(newsTickerLogo());
     if (url.pathname === "/assets/promo-top-left.jpg" || url.pathname === "/promo-top-left.jpg") return jpg(promoTopLeftJpg());
-    if (url.pathname === "/api/health") return json({ ok: true, service: "tennis-listen-bolshe-overlay" });
+    if (url.pathname === "/api/health") return json({ ok: true, service: "tennis-listen-bolshe-overlay", buildVersion: BUILD_VERSION });
     if (url.pathname === "/api/news/tennis") {
       try {
         return json(await sportsTennisNews(env), 200, { "cache-control": "public, max-age=120" });
@@ -126,9 +164,23 @@ export default {
         }, 500, { "cache-control": "no-store" });
       }
     }
+    if (url.pathname === "/api/odds/debug" && request.method === "GET") {
+      try {
+        return json(await oddsDebug(url, env), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
+      }
+    }
+    if (url.pathname === "/api/odds/probe" && request.method === "GET") {
+      try {
+        return json(await oddsProbe(url), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
+      }
+    }
     if (url.pathname === "/api/odds/manual" && request.method === "POST") {
       try {
-        return json(await setManualOddsFromApi(request), 200, { "cache-control": "no-store" });
+        return json(await setManualOddsFromApi(request, env), 200, { "cache-control": "no-store" });
       } catch (error) {
         return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
       }
@@ -142,7 +194,14 @@ export default {
     }
     if (url.pathname === "/api/odds/winline/disable" && request.method === "POST") {
       try {
-        return json(await disableWinlineOddsFromApi(request), 200, { "cache-control": "no-store" });
+        return json(await disableWinlineOddsFromApi(request, env), 200, { "cache-control": "no-store" });
+      } catch (error) {
+        return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
+      }
+    }
+    if (url.pathname === "/api/odds/reset" && request.method === "POST") {
+      try {
+        return json(await resetOddsFromApi(request, env), 200, { "cache-control": "no-store" });
       } catch (error) {
         return json({ ok: false, error: error?.message || String(error) }, 400, { "cache-control": "no-store" });
       }
@@ -151,7 +210,9 @@ export default {
       try {
         return json(await pushOddsFromSidecar(request, env), 200, { "cache-control": "no-store" });
       } catch (error) {
-        return json({ ok: false, error: error?.message || String(error) }, 403, { "cache-control": "no-store" });
+        const message = error?.message || String(error);
+        const status = message === "forbidden" ? 401 : 403;
+        return json({ ok: false, error: message }, status, { "cache-control": "no-store" });
       }
     }
     if (url.pathname === "/api/odds/winline") {
@@ -199,9 +260,12 @@ export default {
         "/api/live-matches",
         "/api/news/tennis",
         "/api/odds/current?matchId=<flashscoreId>",
+        "/api/odds/debug?matchId=<flashscoreId>",
+        "/api/odds/probe?winlineUrl=<winlineUrl>",
         "/api/odds/manual",
         "/api/odds/winline/link",
         "/api/odds/winline/disable",
+        "/api/odds/reset",
         "/api/odds/push",
         "/api/odds/winline",
         "/api/match/flashscore?id=Sril3X2m",
@@ -269,25 +333,44 @@ async function winlineOdds(url, env) {
 
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("json") ? await response.json() : await response.text();
-    const odds = extractWinlineOdds(payload, home, away);
+    const parsed = extractWinlineOdds(payload, home, away);
+    const sanitized = sanitizeOddsForDisplay(
+      { player1: parsed.home, player2: parsed.away },
+      { source: "winline", mode: "url" }
+    );
     return {
       ok: true,
       provider: "winline",
       source: sourceUrl,
       updatedAt: new Date().toISOString(),
-      odds,
+      odds: {
+        home: sanitized.odds.player1,
+        away: sanitized.odds.player2
+      },
+      invalid: !sanitized.valid,
+      invalidReason: sanitized.reason,
+      parser: parsed.parserResult || createOddsParserResult(),
       players: { home, away, eventId }
     };
   }
 
   const auto = await tryAutoWinlineOdds({ home, away, eventId, matchUrl });
   if (auto.home || auto.away) {
+    const sanitized = sanitizeOddsForDisplay(
+      { player1: auto.home, player2: auto.away },
+      { source: "winline", mode: "url" }
+    );
     return {
       ok: true,
       provider: "winline",
       source: auto.source,
       updatedAt: new Date().toISOString(),
-      odds: { home: cleanOdd(auto.home), away: cleanOdd(auto.away) },
+      odds: {
+        home: sanitized.odds.player1,
+        away: sanitized.odds.player2
+      },
+      invalid: !sanitized.valid,
+      invalidReason: sanitized.reason,
       players: { home, away, eventId }
     };
   }
@@ -309,17 +392,19 @@ async function tryAutoWinlineOdds({ home, away, eventId, matchUrl }) {
 
   for (const target of candidates) {
     try {
-      const response = await fetch(target, {
-        headers: {
-          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "user-agent": "Mozilla/5.0 (compatible; tennis-listen-bolshe-overlay/1.0)"
-        },
-        cf: { cacheTtl: 30, cacheEverything: false }
+      const fetched = await fetchOddsByWinlineUrl({
+        winlineUrl: target,
+        player1Name: home,
+        player2Name: away,
+        timeoutMs: WINLINE_REQUEST_TIMEOUT_MS_DEFAULT
       });
-      if (!response.ok) continue;
-      const htmlValue = await response.text();
-      const odds = extractOddsFromHtml(htmlValue, home, away);
-      if (odds.home || odds.away) return { ...odds, source: target };
+      if (fetched?.ok && (fetched.odds?.player1 || fetched.odds?.player2)) {
+        return {
+          home: fetched.odds.player1 ?? null,
+          away: fetched.odds.player2 ?? null,
+          source: target
+        };
+      }
     } catch (_error) {
       // ignore candidate and continue
     }
@@ -328,66 +413,547 @@ async function tryAutoWinlineOdds({ home, away, eventId, matchUrl }) {
   return { home: null, away: null, source: "auto" };
 }
 
-function extractOddsFromHtml(htmlValue, home, away) {
-  const normalizedHome = normalizeName(home);
-  const normalizedAway = normalizeName(away);
-  const textValue = String(htmlValue || "");
+function createOddsParserResult(overrides = {}) {
+  return {
+    marketFound: false,
+    selectedMarketTitle: null,
+    selectedOdds: null,
+    selectedBy: null,
+    foundMarkets: [],
+    foundOutcomePairs: [],
+    rejectedMarkets: [],
+    rejectReasons: [],
+    ...overrides
+  };
+}
 
-  const titleWindow = [];
-  const titlePattern = />([^<]{0,90})<\/(?:span|div|button|a)>/gi;
-  let titleMatch;
-  while ((titleMatch = titlePattern.exec(textValue))) {
-    const row = cleanHtmlText(titleMatch[1]);
-    if (!row) continue;
-    if (
-      normalizedHome &&
-      normalizedAway &&
-      !(normalizeName(row).includes(normalizedHome.split(" ").at(-1)) || normalizeName(row).includes(normalizedAway.split(" ").at(-1)))
-    ) {
-      continue;
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[.,:;()[\]{}"'`!?@#$%^&*_+=<>\\/|-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function includesPattern(textValue, patterns) {
+  if (!textValue) return false;
+  for (const pattern of patterns || []) {
+    if (pattern && textValue.includes(pattern)) return true;
+  }
+  return false;
+}
+
+function hasBannedMarketPattern(normalizedTitle) {
+  return includesPattern(normalizedTitle, WINLINE_MARKET_BANNED_PATTERNS);
+}
+
+function hasPositiveMarketPattern(normalizedTitle) {
+  return includesPattern(normalizedTitle, WINLINE_MARKET_POSITIVE_PATTERNS);
+}
+
+function marketTitleFromNode(node) {
+  if (!node || typeof node !== "object") return "";
+  return [
+    node.name,
+    node.title,
+    node.marketName,
+    node.groupName,
+    node.caption,
+    node.label,
+    node.betName,
+    node.betType,
+    node.market,
+    node.eventName
+  ].filter(Boolean).join(" ").trim();
+}
+
+function isMatchWinnerMarket(market) {
+  const title = normalizeText(marketTitleFromNode(market));
+  if (!title) return false;
+  if (hasBannedMarketPattern(title)) return false;
+  return hasPositiveMarketPattern(title);
+}
+
+function readMarketPair(node) {
+  if (!node || typeof node !== "object") return { home: null, away: null };
+  const pairKeys = [
+    ["homeOdd", "awayOdd"],
+    ["homeOdds", "awayOdds"],
+    ["home", "away"],
+    ["player1", "player2"],
+    ["p1", "p2"],
+    ["k1", "k2"],
+    ["odd1", "odd2"],
+    ["win1", "win2"],
+    ["first", "second"],
+    ["coef1", "coef2"],
+    ["coefficient1", "coefficient2"]
+  ];
+  for (const [homeKey, awayKey] of pairKeys) {
+    const home = cleanOdd(node?.[homeKey]);
+    const away = cleanOdd(node?.[awayKey]);
+    if (home || away) return { home, away };
+  }
+  return { home: null, away: null };
+}
+
+function readOutcomeOdd(node) {
+  if (node === null || node === undefined) return null;
+  if (typeof node !== "object") return cleanOdd(node);
+  const keys = [
+    "odd",
+    "odds",
+    "value",
+    "price",
+    "coef",
+    "coefficient",
+    "k",
+    "quote",
+    "factor",
+    "currentOdd",
+    "currentPrice"
+  ];
+  for (const key of keys) {
+    const parsed = cleanOdd(node?.[key]);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function extractOutcomeLabel(node) {
+  return normalizeText([
+    node?.side,
+    node?.team,
+    node?.participant,
+    node?.competitor,
+    node?.outcome,
+    node?.result,
+    node?.code,
+    node?.id,
+    node?.num,
+    node?.index,
+    node?.order,
+    node?.name,
+    node?.title,
+    node?.label
+  ].filter((value) => value !== undefined && value !== null).join(" "));
+}
+
+function tokenizeNormalizedText(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) return [];
+  return normalized.split(" ").filter(Boolean);
+}
+
+function containsMarkerToken(labelValue, markers) {
+  const tokens = tokenizeNormalizedText(labelValue);
+  if (!tokens.length) return false;
+  return tokens.some((token) => markers.includes(token));
+}
+
+function outcomeSide(node, context = {}) {
+  const marker = extractOutcomeLabel(node);
+  if (!marker) return null;
+  if (containsMarkerToken(marker, WINLINE_OUTCOME_HOME_MARKERS)) return "home";
+  if (containsMarkerToken(marker, WINLINE_OUTCOME_AWAY_MARKERS)) return "away";
+
+  const homeToken = context.homeToken || "";
+  const awayToken = context.awayToken || "";
+  const normalizedMarker = normalizeName(marker);
+  if (homeToken && normalizedMarker.includes(homeToken)) return "home";
+  if (awayToken && normalizedMarker.includes(awayToken)) return "away";
+  return null;
+}
+
+function collectOutcomeNodes(node) {
+  if (!node || typeof node !== "object") return [];
+  const containers = [
+    node.outcomes,
+    node.outcome,
+    node.selections,
+    node.selection,
+    node.items,
+    node.bets,
+    node.bet,
+    node.values,
+    node.lines,
+    node.runners,
+    node.variants,
+    node.options,
+    node.coefficients,
+    node.coefs
+  ];
+  const out = [];
+  for (const container of containers) {
+    if (!container) continue;
+    if (Array.isArray(container)) {
+      out.push(...container);
+    } else if (typeof container === "object") {
+      out.push(...Object.values(container));
     }
-    titleWindow.push(row);
-    if (titleWindow.length > 20) break;
+  }
+  return out;
+}
+
+function extractMarketOddsFromNode(node, context = {}, options = {}) {
+  const direct = readMarketPair(node);
+  let home = direct.home;
+  let away = direct.away;
+  const unknown = [];
+  const diagnostics = {
+    totalOutcomes: 0,
+    labels: [],
+    directPair: Boolean(direct.home || direct.away),
+    hasHomeMarkers: false,
+    hasAwayMarkers: false,
+    hasNamedSides: false,
+    unknownOddsCount: 0,
+    home: null,
+    away: null
+  };
+
+  const outcomes = collectOutcomeNodes(node);
+  diagnostics.totalOutcomes = outcomes.length;
+  for (const item of outcomes) {
+    const label = extractOutcomeLabel(item);
+    if (label) {
+      if (!diagnostics.labels.includes(label) && diagnostics.labels.length < 12) diagnostics.labels.push(label);
+      if (containsMarkerToken(label, WINLINE_OUTCOME_HOME_MARKERS)) diagnostics.hasHomeMarkers = true;
+      if (containsMarkerToken(label, WINLINE_OUTCOME_AWAY_MARKERS)) diagnostics.hasAwayMarkers = true;
+    }
+    const odd = readOutcomeOdd(item);
+    if (!odd) continue;
+    const side = outcomeSide(item, context);
+    if (side === "home" && !home) {
+      home = odd;
+    } else if (side === "away" && !away) {
+      away = odd;
+    } else {
+      unknown.push(odd);
+      diagnostics.unknownOddsCount += 1;
+    }
+    if (side && (context.homeToken || context.awayToken) && label) {
+      diagnostics.hasNamedSides = true;
+    }
   }
 
-  const globalNums = textValue.match(/\b\d{1,2}[.,]\d{2}\b/g) || [];
-  const fromWindow = titleWindow.join(" ").match(/\b\d{1,2}[.,]\d{2}\b/g) || [];
-  const numbers = fromWindow.length ? fromWindow : globalNums;
-  return { home: cleanOdd(numbers[0]), away: cleanOdd(numbers[1]) };
+  if (!home && unknown.length) home = unknown.shift();
+  if (!away && unknown.length) away = unknown.shift();
+  diagnostics.home = cleanOdd(home);
+  diagnostics.away = cleanOdd(away);
+  if (options.withDiagnostics) {
+    return { home: diagnostics.home, away: diagnostics.away, diagnostics };
+  }
+  return { home: diagnostics.home, away: diagnostics.away };
+}
+
+function extractMatchWinnerOddsFromPayload(payload, home, away) {
+  const parserResult = createOddsParserResult();
+  if (!payload || typeof payload !== "object") return { home: null, away: null, parserResult };
+
+  const homeToken = normalizeName(home || "").split(" ").filter(Boolean).at(-1) || "";
+  const awayToken = normalizeName(away || "").split(" ").filter(Boolean).at(-1) || "";
+  const foundMarkets = [];
+  const foundOutcomePairs = [];
+  const rejectedMarkets = [];
+  const rejectReasons = [];
+
+  const stack = [payload];
+  const visited = new Set();
+  while (stack.length) {
+    const item = stack.pop();
+    if (!item || typeof item !== "object") continue;
+    if (visited.has(item)) continue;
+    visited.add(item);
+
+    if (Array.isArray(item)) {
+      for (const child of item) stack.push(child);
+      continue;
+    }
+
+    const title = marketTitleFromNode(item);
+    if (title && foundMarkets.length < 40 && !foundMarkets.includes(title)) foundMarkets.push(title);
+
+    const normalizedTitle = normalizeText(title);
+    const bannedByTitle = normalizedTitle ? hasBannedMarketPattern(normalizedTitle) : false;
+    const positiveByTitle = normalizedTitle ? hasPositiveMarketPattern(normalizedTitle) : false;
+    const odds = extractMarketOddsFromNode(item, { homeToken, awayToken }, { withDiagnostics: true });
+    const player1 = cleanOdd(odds.home);
+    const player2 = cleanOdd(odds.away);
+    const hasPair = Boolean(player1 && player2);
+    const hasOutcomeSignals = odds.diagnostics.totalOutcomes >= 2
+      && (odds.diagnostics.hasHomeMarkers || odds.diagnostics.hasAwayMarkers || odds.diagnostics.hasNamedSides);
+    const acceptedByTitle = positiveByTitle && !bannedByTitle;
+    const acceptedByOutcomes = !positiveByTitle && !bannedByTitle && hasOutcomeSignals;
+    const accepted = acceptedByTitle || acceptedByOutcomes;
+
+    if (hasPair && foundOutcomePairs.length < 30) {
+      foundOutcomePairs.push({
+        title: title || null,
+        normalizedTitle: normalizedTitle || null,
+        player1,
+        player2,
+        via: acceptedByTitle ? "title" : (acceptedByOutcomes ? "outcomes" : "unknown"),
+        outcomeCount: odds.diagnostics.totalOutcomes,
+        labels: odds.diagnostics.labels
+      });
+    }
+
+    if (accepted && !parserResult.marketFound) {
+      parserResult.marketFound = true;
+      parserResult.selectedBy = acceptedByTitle ? "title" : "outcomes";
+      parserResult.selectedMarketTitle = title || null;
+      parserResult.selectedOdds = { player1, player2 };
+    }
+
+    if (accepted && hasPair) {
+      parserResult.marketFound = true;
+      parserResult.selectedBy = acceptedByTitle ? "title" : "outcomes";
+      parserResult.selectedMarketTitle = title || null;
+      parserResult.selectedOdds = { player1, player2 };
+      parserResult.foundMarkets = foundMarkets;
+      parserResult.foundOutcomePairs = foundOutcomePairs;
+      parserResult.rejectedMarkets = rejectedMarkets;
+      parserResult.rejectReasons = rejectReasons;
+      return { home: player1, away: player2, parserResult };
+    }
+
+    if (accepted && !hasPair && rejectedMarkets.length < 30) {
+      const reason = "candidate-without-odds-pair";
+      rejectedMarkets.push({
+        title: title || null,
+        normalizedTitle: normalizedTitle || null,
+        reason,
+        outcomeCount: odds.diagnostics.totalOutcomes,
+        labels: odds.diagnostics.labels
+      });
+      if (!rejectReasons.includes(reason)) rejectReasons.push(reason);
+    } else if (bannedByTitle && (positiveByTitle || hasPair || hasOutcomeSignals) && rejectedMarkets.length < 30) {
+      const reason = "title-has-banned-pattern";
+      rejectedMarkets.push({
+        title: title || null,
+        normalizedTitle: normalizedTitle || null,
+        reason,
+        outcomeCount: odds.diagnostics.totalOutcomes,
+        labels: odds.diagnostics.labels
+      });
+      if (!rejectReasons.includes(reason)) rejectReasons.push(reason);
+    } else if (!accepted && hasPair && rejectedMarkets.length < 30) {
+      const reason = "odds-pair-found-but-market-not-accepted";
+      rejectedMarkets.push({
+        title: title || null,
+        normalizedTitle: normalizedTitle || null,
+        reason,
+        outcomeCount: odds.diagnostics.totalOutcomes,
+        labels: odds.diagnostics.labels
+      });
+      if (!rejectReasons.includes(reason)) rejectReasons.push(reason);
+    } else if (!accepted && hasOutcomeSignals && rejectedMarkets.length < 30) {
+      const reason = "outcomes-signal-without-accepted-market";
+      rejectedMarkets.push({
+        title: title || null,
+        normalizedTitle: normalizedTitle || null,
+        reason,
+        outcomeCount: odds.diagnostics.totalOutcomes,
+        labels: odds.diagnostics.labels
+      });
+      if (!rejectReasons.includes(reason)) rejectReasons.push(reason);
+    }
+
+    if (isMatchWinnerMarket(item) && !accepted) {
+      const reason = "match-winner-title-hit-but-market-rejected";
+      if (!rejectReasons.includes(reason)) rejectReasons.push(reason);
+      if (rejectedMarkets.length < 30) {
+        rejectedMarkets.push({
+          title: title || null,
+          normalizedTitle: normalizedTitle || null,
+          reason,
+          outcomeCount: odds.diagnostics.totalOutcomes,
+          labels: odds.diagnostics.labels
+        });
+      }
+    }
+
+    for (const value of Object.values(item)) {
+      if (value && typeof value === "object") stack.push(value);
+    }
+  }
+
+  parserResult.foundMarkets = foundMarkets;
+  parserResult.foundOutcomePairs = foundOutcomePairs;
+  parserResult.rejectedMarkets = rejectedMarkets;
+  parserResult.rejectReasons = rejectReasons;
+  return { home: null, away: null, parserResult };
+}
+
+function extractBalancedJson(source, startIndex) {
+  const text = String(source || "");
+  let start = -1;
+  for (let i = startIndex; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "{" || char === "[") {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  const openChar = text[start];
+  const closeChar = openChar === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let quoteChar = "";
+  let escaped = false;
+
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quoteChar) {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      inString = true;
+      quoteChar = char;
+      continue;
+    }
+    if (char === openChar) depth += 1;
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function parseEmbeddedJsonPayloads(htmlValue) {
+  const payloads = [];
+  const textValue = String(htmlValue || "");
+  const scriptPattern = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  const markers = [/__NEXT_DATA__\s*=\s*/gi, /__INITIAL_STATE__\s*=\s*/gi, /__PRELOADED_STATE__\s*=\s*/gi, /__NUXT__\s*=\s*/gi];
+  let scriptMatch;
+
+  while ((scriptMatch = scriptPattern.exec(textValue))) {
+    const body = String(scriptMatch[1] || "").trim();
+    if (!body) continue;
+
+    const bodyStartsWithJson = (body.startsWith("{") && body.endsWith("}")) || (body.startsWith("[") && body.endsWith("]"));
+    if (bodyStartsWithJson) {
+      try {
+        payloads.push(JSON.parse(body));
+      } catch (_error) {
+        // continue searching
+      }
+    }
+
+    for (const marker of markers) {
+      marker.lastIndex = 0;
+      let markerMatch;
+      while ((markerMatch = marker.exec(body))) {
+        const candidate = extractBalancedJson(body, marker.lastIndex);
+        if (!candidate) continue;
+        try {
+          payloads.push(JSON.parse(candidate));
+        } catch (_error) {
+          // continue searching
+        }
+      }
+    }
+  }
+
+  return payloads;
+}
+
+function extractOddsFromHtml(htmlValue, home, away) {
+  const payloads = parseEmbeddedJsonPayloads(htmlValue);
+  let fallback = createOddsParserResult();
+  for (const payload of payloads) {
+    const parsed = extractWinlineOdds(payload, home, away);
+    fallback = pickBetterParserResult(fallback, parsed?.parserResult);
+    if (parsed.home || parsed.away) return parsed;
+  }
+  return { home: null, away: null, parserResult: fallback };
 }
 
 function extractWinlineOdds(payload, home, away) {
   if (typeof payload === "string") {
-    const firstTwo = payload.match(/\b\d+[.,]\d+\b/g)?.slice(0, 2) || [];
-    return { home: cleanOdd(firstTwo[0]), away: cleanOdd(firstTwo[1]) };
+    const trimmed = payload.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return extractWinlineOdds(JSON.parse(trimmed), home, away);
+      } catch (_error) {
+        return { home: null, away: null, parserResult: createOddsParserResult() };
+      }
+    }
+    return { home: null, away: null, parserResult: createOddsParserResult() };
   }
 
-  const direct = payload?.odds || payload?.winline || payload;
-  const directHome = direct?.home ?? direct?.homeOdd ?? direct?.p1 ?? direct?.player1 ?? direct?.first;
-  const directAway = direct?.away ?? direct?.awayOdd ?? direct?.p2 ?? direct?.player2 ?? direct?.second;
-  if (directHome || directAway) return { home: cleanOdd(directHome), away: cleanOdd(directAway) };
+  const directPayload = payload?.odds || payload?.winline || payload;
+  return extractMatchWinnerOddsFromPayload(directPayload, home, away);
+}
 
-  const wantedHome = normalizeName(home);
-  const wantedAway = normalizeName(away);
-  const stack = [payload];
-  while (stack.length) {
-    const item = stack.pop();
-    if (!item || typeof item !== "object") continue;
-    if (Array.isArray(item)) {
-      stack.push(...item);
-      continue;
-    }
+function parserResultScore(result) {
+  if (!result || typeof result !== "object") return 0;
+  let score = 0;
+  if (result.marketFound) score += 50;
+  if (result.selectedOdds?.player1 && result.selectedOdds?.player2) score += 60;
+  score += Math.min(20, Number(result.foundMarkets?.length || 0));
+  score += Math.min(20, Number(result.foundOutcomePairs?.length || 0));
+  return score;
+}
 
-    const text = normalizeName([item.home, item.away, item.player1, item.player2, item.name, item.title, item.eventName].filter(Boolean).join(" "));
-    if (text && (!wantedHome || text.includes(wantedHome.split(" ").at(-1))) && (!wantedAway || text.includes(wantedAway.split(" ").at(-1)))) {
-      const homeOdd = item.homeOdd ?? item.homeOdds ?? item.odd1 ?? item.p1 ?? item.win1 ?? item.k1;
-      const awayOdd = item.awayOdd ?? item.awayOdds ?? item.odd2 ?? item.p2 ?? item.win2 ?? item.k2;
-      if (homeOdd || awayOdd) return { home: cleanOdd(homeOdd), away: cleanOdd(awayOdd) };
-    }
-    stack.push(...Object.values(item).filter((value) => value && typeof value === "object"));
+function pickBetterParserResult(current, candidate) {
+  if (!candidate) return current || createOddsParserResult();
+  if (!current) return candidate;
+  return parserResultScore(candidate) >= parserResultScore(current) ? candidate : current;
+}
+
+function extractHtmlTitle(htmlValue) {
+  const match = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(String(htmlValue || ""));
+  if (!match) return null;
+  return String(match[1] || "").replace(/\s+/g, " ").trim() || null;
+}
+
+function collectScriptDiagnostics(htmlValue) {
+  const htmlText = String(htmlValue || "");
+  const scriptPattern = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  const srcPattern = /\bsrc\s*=\s*["']([^"']+)["']/i;
+  const typePattern = /\btype\s*=\s*["']([^"']+)["']/i;
+  const scripts = [];
+  let match;
+  while ((match = scriptPattern.exec(htmlText))) {
+    const attrs = String(match[1] || "");
+    const body = String(match[2] || "");
+    const srcMatch = srcPattern.exec(attrs);
+    const typeMatch = typePattern.exec(attrs);
+    const src = srcMatch ? srcMatch[1] : null;
+    const type = typeMatch ? typeMatch[1].toLowerCase() : null;
+    scripts.push({
+      kind: src ? "external" : "inline",
+      src,
+      type,
+      length: body.length,
+      hasJsonMarker: /__NEXT_DATA__|__INITIAL_STATE__|__PRELOADED_STATE__|__NUXT__/i.test(body),
+      startsLikeJson: /^\s*[\[{]/.test(body)
+    });
   }
-
-  return { home: null, away: null };
+  return {
+    total: scripts.length,
+    inline: scripts.filter((item) => item.kind === "inline").length,
+    external: scripts.filter((item) => item.kind === "external").length,
+    externalSrcSample: scripts.filter((item) => item.src).map((item) => item.src).slice(0, 20),
+    inlineJsonLikeCount: scripts.filter((item) => item.kind === "inline" && (item.startsLikeJson || item.hasJsonMarker)).length,
+    blocks: scripts.slice(0, 30)
+  };
 }
 
 function cleanOdd(value) {
@@ -398,6 +964,88 @@ function cleanOdd(value) {
 
 function normalizeName(value) {
   return String(value || "").toLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
+}
+
+function oddsToNumber(value) {
+  const textValue = String(value ?? "").replace(",", ".").trim();
+  if (!textValue) return null;
+  const numeric = Number(textValue);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric;
+}
+
+function oddsToDisplay(value) {
+  const numeric = oddsToNumber(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric.toFixed(2);
+}
+
+function isKnownBadOddsPair(odds) {
+  const a = oddsToNumber(odds?.player1);
+  const b = oddsToNumber(odds?.player2);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  return Math.abs(a - WINLINE_KNOWN_BAD_ODDS.player1) < 0.001 && Math.abs(b - WINLINE_KNOWN_BAD_ODDS.player2) < 0.001;
+}
+
+function isValidMatchWinnerOddsPair(odds) {
+  const a = oddsToNumber(odds?.player1);
+  const b = oddsToNumber(odds?.player2);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  if (a <= 1 || b <= 1) return false;
+  if (a > 50 || b > 50) return false;
+  const impliedSum = (1 / a) + (1 / b);
+  if (impliedSum < 0.85 || impliedSum > 1.35) return false;
+  return true;
+}
+
+function sanitizeOddsForDisplay(rawOdds, meta = {}) {
+  const a = oddsToDisplay(rawOdds?.player1);
+  const b = oddsToDisplay(rawOdds?.player2);
+  const isManual = meta.mode === "manual" || meta.source === "manual";
+
+  if (isManual) {
+    if (!a && !b) {
+      return {
+        odds: { player1: null, player2: null },
+        valid: false,
+        reason: "missing-or-not-finite"
+      };
+    }
+    return {
+      odds: { player1: a || null, player2: b || null },
+      valid: true,
+      reason: null
+    };
+  }
+
+  if (!a || !b) {
+    return {
+      odds: { player1: null, player2: null },
+      valid: false,
+      reason: "missing-or-not-finite"
+    };
+  }
+
+  if (isKnownBadOddsPair({ player1: a, player2: b })) {
+    return {
+      odds: { player1: null, player2: null },
+      valid: false,
+      reason: "known-placeholder-odds"
+    };
+  }
+  if (!isValidMatchWinnerOddsPair({ player1: a, player2: b })) {
+    return {
+      odds: { player1: null, player2: null },
+      valid: false,
+      reason: "invalid-match-winner-odds"
+    };
+  }
+
+  return {
+    odds: { player1: a, player2: b },
+    valid: true,
+    reason: null
+  };
 }
 
 function oddsConfig(env) {
@@ -436,10 +1084,12 @@ function baseOddsState(matchId) {
     winlineEventId: "",
     player1Name: "",
     player2Name: "",
+    marketTitle: "",
     odds: { player1: null, player2: null },
     updatedAt: null,
     lastSuccessAt: null,
     lastError: null,
+    lastParserResult: null,
     stale: true,
     lastPolledAt: 0
   };
@@ -469,6 +1119,87 @@ function setOddsState(matchIdRaw, patch = {}) {
   return next;
 }
 
+function oddsKvBinding(env) {
+  return env && env.ODDS_KV && typeof env.ODDS_KV.get === "function" ? env.ODDS_KV : null;
+}
+
+function oddsStorageKey(matchIdRaw) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  return `${ODDS_KV_PREFIX}${matchId}`;
+}
+
+function normalizeOddsStateSnapshot(stateRaw, matchIdRaw) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  const base = baseOddsState(matchId);
+  if (!stateRaw || typeof stateRaw !== "object") return base;
+  return {
+    ...base,
+    ...stateRaw,
+    matchId,
+    autoUpdate: Boolean(stateRaw.autoUpdate),
+    lastPolledAt: Number.isFinite(Number(stateRaw.lastPolledAt)) ? Number(stateRaw.lastPolledAt) : 0,
+    odds: {
+      ...base.odds,
+      ...((stateRaw.odds && typeof stateRaw.odds === "object") ? stateRaw.odds : {})
+    }
+  };
+}
+
+async function getOddsStatePersistent(env, matchIdRaw) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  const kv = oddsKvBinding(env);
+  if (!kv) return getOddsState(matchId);
+
+  const key = oddsStorageKey(matchId);
+  try {
+    const stored = await kv.get(key, "json");
+    if (stored && typeof stored === "object") {
+      const normalized = normalizeOddsStateSnapshot(stored, matchId);
+      oddsStateByMatchId.set(matchId, normalized);
+      return normalized;
+    }
+  } catch (_error) {
+    // fall back to in-memory state
+  }
+  return getOddsState(matchId);
+}
+
+async function setOddsStatePersistent(env, matchIdRaw, patch = {}) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  const current = await getOddsStatePersistent(env, matchId);
+  const next = {
+    ...current,
+    ...patch,
+    odds: {
+      ...(current.odds || {}),
+      ...((patch && patch.odds) || {})
+    }
+  };
+  oddsStateByMatchId.set(matchId, next);
+
+  const kv = oddsKvBinding(env);
+  if (kv) {
+    try {
+      await kv.put(oddsStorageKey(matchId), JSON.stringify(next));
+    } catch (_error) {
+      // in-memory state still has the latest snapshot
+    }
+  }
+  return next;
+}
+
+async function deleteOddsStatePersistent(env, matchIdRaw) {
+  const matchId = oddsMatchKey(matchIdRaw);
+  oddsStateByMatchId.delete(matchId);
+  const kv = oddsKvBinding(env);
+  if (!kv) return;
+  try {
+    await kv.delete(oddsStorageKey(matchId));
+  } catch (_error) {
+    // ignore KV delete errors
+  }
+}
+
 function parseOddValue(value) {
   const cleaned = cleanOdd(value);
   return cleaned === null ? null : cleaned;
@@ -482,11 +1213,22 @@ function staleOdds(state, env) {
 }
 
 function oddsPayload(state, env) {
-  const home = state?.odds?.player1 ?? null;
-  const away = state?.odds?.player2 ?? null;
+  const sanitized = sanitizeOddsForDisplay(
+    {
+      player1: state?.odds?.player1 ?? null,
+      player2: state?.odds?.player2 ?? null
+    },
+    {
+      source: state?.source || "winline",
+      mode: state?.mode || "off"
+    }
+  );
+  const home = sanitized.odds.player1 ?? null;
+  const away = sanitized.odds.player2 ?? null;
   const stale = staleOdds(state, env);
   return {
     ok: true,
+    buildVersion: BUILD_VERSION,
     matchId: state?.matchId || null,
     source: state?.source || "winline",
     mode: state?.mode || "off",
@@ -500,6 +1242,8 @@ function oddsPayload(state, env) {
     updatedAt: state?.updatedAt || null,
     lastSuccessAt: state?.lastSuccessAt || null,
     lastError: state?.lastError || null,
+    invalid: !sanitized.valid,
+    invalidReason: sanitized.reason,
     stale
   };
 }
@@ -524,7 +1268,7 @@ function normalizeWinlineUrl(raw) {
   return parsed.toString();
 }
 
-async function fetchOddsByWinlineUrl({ winlineUrl, player1Name = "", player2Name = "", timeoutMs = WINLINE_REQUEST_TIMEOUT_MS_DEFAULT }) {
+function winlineFetchInit(timeoutMs = WINLINE_REQUEST_TIMEOUT_MS_DEFAULT) {
   const requestInit = {
     headers: {
       accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
@@ -534,12 +1278,17 @@ async function fetchOddsByWinlineUrl({ winlineUrl, player1Name = "", player2Name
   };
   const signal = timeoutSignal(timeoutMs);
   if (signal) requestInit.signal = signal;
+  return requestInit;
+}
+
+async function fetchOddsByWinlineUrl({ winlineUrl, player1Name = "", player2Name = "", timeoutMs = WINLINE_REQUEST_TIMEOUT_MS_DEFAULT }) {
+  const requestInit = winlineFetchInit(timeoutMs);
   const response = await fetch(winlineUrl, requestInit);
   if (!response.ok) {
-    return { ok: false, error: `Winline ${response.status}` };
+    return { ok: false, error: `Winline ${response.status}`, lastParserResult: createOddsParserResult() };
   }
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-  let parsedOdds = { home: null, away: null };
+  let parsedOdds = { home: null, away: null, parserResult: createOddsParserResult() };
   if (contentType.includes("json")) {
     const payload = await response.json();
     parsedOdds = extractWinlineOdds(payload, player1Name, player2Name);
@@ -547,23 +1296,182 @@ async function fetchOddsByWinlineUrl({ winlineUrl, player1Name = "", player2Name
     const htmlValue = await response.text();
     parsedOdds = extractOddsFromHtml(htmlValue, player1Name, player2Name);
   }
+  const parserResult = parsedOdds?.parserResult || createOddsParserResult();
   const player1 = parseOddValue(parsedOdds.home);
   const player2 = parseOddValue(parsedOdds.away);
-  if (!player1 && !player2) {
-    return { ok: false, error: "Не удалось извлечь коэффициенты из страницы Winline" };
+  const sanitized = sanitizeOddsForDisplay(
+    { player1, player2 },
+    { source: "winline", mode: "url" }
+  );
+  if (!sanitized.valid) {
+    return {
+      ok: false,
+      error: parserResult.marketFound ? "Invalid match winner odds" : "Match winner market not found",
+      invalid: true,
+      invalidReason: sanitized.reason,
+      odds: { player1: null, player2: null },
+      lastParserResult: parserResult
+    };
   }
   return {
     ok: true,
     source: winlineUrl,
     updatedAt: new Date().toISOString(),
-    odds: { player1, player2 }
+    odds: sanitized.odds,
+    lastParserResult: parserResult
   };
+}
+
+function payloadKind(value) {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  return typeof value;
+}
+
+function sampleOddsLikeNumbers(textValue, limit = 30) {
+  const text = String(textValue || "");
+  const pattern = /\b\d{1,2}\.\d{2}\b/g;
+  const out = [];
+  let match;
+  while ((match = pattern.exec(text)) && out.length < limit) {
+    const value = match[0];
+    if (!out.includes(value)) out.push(value);
+  }
+  return out;
+}
+
+function containsPlayerToken(textValue, playerName) {
+  const token = normalizeName(playerName || "").split(" ").filter(Boolean).at(-1) || "";
+  if (!token) return null;
+  return normalizeName(textValue || "").includes(token);
+}
+
+function buildProbeLikelyReason(report) {
+  if (!report) return "probe-empty";
+  if (report.fetchStatus >= 400) return "winline-http-error";
+  if (report.fetchStatus === 200 && report.contentType?.includes("text/html")) {
+    const hasPayloads = Number(report?.embeddedJson?.count || 0) > 0;
+    const hasMarkets = Number(report?.marketTitles?.length || 0) > 0;
+    const hasSelectedOdds = Boolean(report?.selectedOdds?.player1 && report?.selectedOdds?.player2);
+    if (!hasPayloads && !hasMarkets) return "winline-data-loaded-client-side-or-blocked";
+    if (hasPayloads && hasMarkets && !hasSelectedOdds) return "market-found-but-not-extracted";
+    if (hasPayloads && !hasMarkets) return "embedded-json-without-markets";
+  }
+  if (report.fetchStatus === 200 && report.contentType?.includes("json")) {
+    if (!report.marketTitles?.length) return "json-without-market-candidates";
+    if (report.marketTitles?.length && !(report.selectedOdds?.player1 && report.selectedOdds?.player2)) return "market-found-but-odds-pair-missing";
+  }
+  return "insufficient-data";
+}
+
+async function oddsProbe(url) {
+  const rawWinlineUrl = String(url.searchParams.get("winlineUrl") || url.searchParams.get("url") || "").trim();
+  const winlineUrl = normalizeWinlineUrl(rawWinlineUrl);
+  const player1Name = normalizeFreeText(url.searchParams.get("home") || url.searchParams.get("player1") || "");
+  const player2Name = normalizeFreeText(url.searchParams.get("away") || url.searchParams.get("player2") || "");
+  const timeoutMs = clampNumber(url.searchParams.get("timeoutMs"), WINLINE_REQUEST_TIMEOUT_MS_DEFAULT, 1000, 45000);
+
+  const report = {
+    ok: true,
+    buildVersion: BUILD_VERSION,
+    winlineUrl,
+    player1Name: player1Name || null,
+    player2Name: player2Name || null,
+    fetchStatus: null,
+    contentType: null,
+    htmlLength: 0,
+    pageTitle: null,
+    containsPlayer1: false,
+    containsPlayer2: false,
+    containsOddsLikeNumbers: false,
+    oddsLikeSamples: [],
+    scriptBlocks: null,
+    embeddedJson: { count: 0, kinds: [] },
+    marketTitles: [],
+    outcomePairs: [],
+    selectedMarket: null,
+    selectedBy: null,
+    selectedOdds: null,
+    rejectReasons: [],
+    rejectedMarkets: [],
+    likelyReason: null,
+    recommendation: null
+  };
+
+  let response;
+  try {
+    response = await fetch(winlineUrl, winlineFetchInit(timeoutMs));
+  } catch (error) {
+    report.ok = false;
+    report.rejectReasons = [error?.message || String(error)];
+    report.likelyReason = "winline-fetch-failed";
+    report.recommendation = "use-node-playwright-odds-service";
+    return report;
+  }
+  report.fetchStatus = Number(response.status || 0);
+  report.contentType = String(response.headers.get("content-type") || "").toLowerCase();
+
+  let parserResult = createOddsParserResult();
+  if (report.contentType.includes("json")) {
+    const rawBody = await response.text();
+    report.htmlLength = rawBody.length;
+    report.containsOddsLikeNumbers = sampleOddsLikeNumbers(rawBody, 25).length > 0;
+    report.oddsLikeSamples = sampleOddsLikeNumbers(rawBody, 25);
+    try {
+      const payload = JSON.parse(rawBody);
+      report.embeddedJson = { count: 1, kinds: [payloadKind(payload)] };
+      const parsed = extractWinlineOdds(payload, player1Name, player2Name);
+      parserResult = pickBetterParserResult(parserResult, parsed.parserResult);
+    } catch (_error) {
+      parserResult.rejectReasons = [...(parserResult.rejectReasons || []), "json-parse-failed"];
+    }
+  } else {
+    const htmlValue = await response.text();
+    report.htmlLength = htmlValue.length;
+    report.pageTitle = extractHtmlTitle(htmlValue);
+    report.containsPlayer1 = Boolean(containsPlayerToken(htmlValue, player1Name));
+    report.containsPlayer2 = Boolean(containsPlayerToken(htmlValue, player2Name));
+    report.oddsLikeSamples = sampleOddsLikeNumbers(htmlValue, 30);
+    report.containsOddsLikeNumbers = report.oddsLikeSamples.length > 0;
+    report.scriptBlocks = collectScriptDiagnostics(htmlValue);
+    const payloads = parseEmbeddedJsonPayloads(htmlValue);
+    report.embeddedJson = {
+      count: payloads.length,
+      kinds: payloads.slice(0, 20).map((item) => payloadKind(item))
+    };
+    for (const payload of payloads) {
+      const parsed = extractWinlineOdds(payload, player1Name, player2Name);
+      parserResult = pickBetterParserResult(parserResult, parsed.parserResult);
+      if (parsed.home && parsed.away) break;
+    }
+  }
+
+  report.marketTitles = (parserResult.foundMarkets || []).slice(0, 80);
+  report.outcomePairs = (parserResult.foundOutcomePairs || []).slice(0, 40);
+  report.selectedMarket = parserResult.selectedMarketTitle || null;
+  report.selectedBy = parserResult.selectedBy || null;
+  report.selectedOdds = parserResult.selectedOdds || null;
+  report.rejectReasons = parserResult.rejectReasons || [];
+  report.rejectedMarkets = (parserResult.rejectedMarkets || []).slice(0, 40);
+
+  report.likelyReason = buildProbeLikelyReason(report);
+  if (report.likelyReason === "winline-data-loaded-client-side-or-blocked") {
+    report.recommendation = "use-node-playwright-odds-service";
+  } else if (report.likelyReason === "market-found-but-not-extracted" || report.likelyReason === "market-found-but-odds-pair-missing") {
+    report.recommendation = "adjust-market-outcome-mapping";
+  } else if (report.likelyReason === "winline-http-error") {
+    report.recommendation = "check-winline-availability-and-headers";
+  } else {
+    report.recommendation = "review-reject-reasons-and-market-samples";
+  }
+
+  return report;
 }
 
 async function refreshWinlineOddsState(matchIdRaw, env, options = {}) {
   const matchId = oddsMatchKey(matchIdRaw);
   const force = Boolean(options.force);
-  const state = getOddsState(matchId);
+  const state = await getOddsStatePersistent(env, matchId);
   if (!state.autoUpdate || !state.winlineUrl || !oddsConfig(env).enabled) {
     return state;
   }
@@ -579,8 +1487,8 @@ async function refreshWinlineOddsState(matchIdRaw, env, options = {}) {
 
   const task = (async () => {
     const startedAt = Date.now();
-    setOddsState(matchId, { lastPolledAt: startedAt });
-    const before = getOddsState(matchId);
+    await setOddsStatePersistent(env, matchId, { lastPolledAt: startedAt });
+    const before = await getOddsStatePersistent(env, matchId);
     const fetched = await fetchOddsByWinlineUrl({
       winlineUrl: before.winlineUrl,
       player1Name: before.player1Name,
@@ -588,7 +1496,7 @@ async function refreshWinlineOddsState(matchIdRaw, env, options = {}) {
       timeoutMs: conf.requestTimeoutMs
     });
     if (fetched.ok) {
-      return setOddsState(matchId, {
+      return setOddsStatePersistent(env, matchId, {
         source: "winline",
         mode: before.mode === "discovered" ? "discovered" : "url",
         autoUpdate: true,
@@ -596,24 +1504,29 @@ async function refreshWinlineOddsState(matchIdRaw, env, options = {}) {
         updatedAt: fetched.updatedAt,
         lastSuccessAt: fetched.updatedAt,
         lastError: null,
+        lastParserResult: fetched.lastParserResult || before.lastParserResult || null,
         stale: false
       });
     }
 
-    const current = getOddsState(matchId);
-    const stale = staleOdds(current, env);
-    return setOddsState(matchId, {
+    const current = await getOddsStatePersistent(env, matchId);
+    const stale = true;
+    return setOddsStatePersistent(env, matchId, {
+      odds: { player1: null, player2: null },
       updatedAt: new Date().toISOString(),
       lastError: fetched.error || "Winline unavailable",
+      lastParserResult: fetched.lastParserResult || current.lastParserResult || null,
       stale
     });
   })()
-    .catch((error) => {
-      const current = getOddsState(matchId);
-      const stale = staleOdds(current, env);
-      return setOddsState(matchId, {
+    .catch(async (error) => {
+      const current = await getOddsStatePersistent(env, matchId);
+      const stale = true;
+      return setOddsStatePersistent(env, matchId, {
+        odds: { player1: null, player2: null },
         updatedAt: new Date().toISOString(),
         lastError: error?.message || String(error),
+        lastParserResult: current.lastParserResult || null,
         stale
       });
     })
@@ -633,30 +1546,41 @@ async function currentOdds(url, env) {
   const manual1 = parseOddValue(url.searchParams.get("homeOdd") || url.searchParams.get("player1Odd"));
   const manual2 = parseOddValue(url.searchParams.get("awayOdd") || url.searchParams.get("player2Odd"));
   if (!rawMatchId) {
+    const source = manual1 || manual2 ? "manual" : "winline";
+    const mode = manual1 || manual2 ? "manual" : "off";
+    const sanitized = sanitizeOddsForDisplay(
+      { player1: manual1, player2: manual2 },
+      { source, mode }
+    );
+    const player1 = sanitized.odds.player1;
+    const player2 = sanitized.odds.player2;
     return {
       ok: true,
+      buildVersion: BUILD_VERSION,
       matchId: null,
-      source: manual1 || manual2 ? "manual" : "winline",
-      mode: manual1 || manual2 ? "manual" : "off",
+      source,
+      mode,
       autoUpdate: false,
       odds: {
-        player1: manual1,
-        player2: manual2,
-        home: manual1,
-        away: manual2
+        player1,
+        player2,
+        home: player1,
+        away: player2
       },
       updatedAt: manual1 || manual2 ? new Date().toISOString() : null,
       lastSuccessAt: manual1 || manual2 ? new Date().toISOString() : null,
       lastError: null,
+      invalid: !sanitized.valid,
+      invalidReason: sanitized.reason,
       stale: true
     };
   }
 
   const matchId = oddsMatchKey(rawMatchId);
-  let state = getOddsState(matchId);
+  let state = await getOddsStatePersistent(env, matchId);
 
   if (player1Name || player2Name || winlineUrl) {
-    state = setOddsState(matchId, {
+    state = await setOddsStatePersistent(env, matchId, {
       player1Name: player1Name || state.player1Name,
       player2Name: player2Name || state.player2Name,
       winlineUrl: winlineUrl || state.winlineUrl
@@ -665,7 +1589,7 @@ async function currentOdds(url, env) {
 
   if (manual1 || manual2) {
     const timestamp = new Date().toISOString();
-    state = setOddsState(matchId, {
+    state = await setOddsStatePersistent(env, matchId, {
       source: "manual",
       mode: "manual",
       autoUpdate: false,
@@ -696,15 +1620,15 @@ async function readRequestJson(request) {
   return payload;
 }
 
-async function setManualOddsFromApi(request) {
+async function setManualOddsFromApi(request, env) {
   const payload = await readRequestJson(request);
   const matchId = oddsMatchKey(payload.matchId);
   const player1 = parseOddValue(payload.player1 ?? payload.home ?? payload.homeOdd);
   const player2 = parseOddValue(payload.player2 ?? payload.away ?? payload.awayOdd);
   if (!player1 && !player2) throw new Error("At least one odd is required");
-  const current = getOddsState(matchId);
+  const current = await getOddsStatePersistent(env, matchId);
   const timestamp = String(payload.updatedAt || "").trim() || new Date().toISOString();
-  const state = setOddsState(matchId, {
+  const state = await setOddsStatePersistent(env, matchId, {
     source: "manual",
     mode: "manual",
     autoUpdate: false,
@@ -723,8 +1647,8 @@ async function setManualOddsFromApi(request) {
 async function linkWinlineOdds(matchIdRaw, winlineUrlRaw, env, context = {}) {
   const matchId = oddsMatchKey(matchIdRaw);
   const winlineUrl = normalizeWinlineUrl(winlineUrlRaw);
-  const current = getOddsState(matchId);
-  let state = setOddsState(matchId, {
+  const current = await getOddsStatePersistent(env, matchId);
+  let state = await setOddsStatePersistent(env, matchId, {
     source: "winline",
     mode: context.mode || "url",
     autoUpdate: true,
@@ -749,11 +1673,11 @@ async function linkWinlineOddsFromApi(request, env) {
   });
 }
 
-async function disableWinlineOddsFromApi(request) {
+async function disableWinlineOddsFromApi(request, env) {
   const payload = await readRequestJson(request);
   const matchId = oddsMatchKey(payload.matchId);
-  const current = getOddsState(matchId);
-  const state = setOddsState(matchId, {
+  const current = await getOddsStatePersistent(env, matchId);
+  const state = await setOddsStatePersistent(env, matchId, {
     source: current.source || "manual",
     mode: "off",
     autoUpdate: false,
@@ -763,44 +1687,150 @@ async function disableWinlineOddsFromApi(request) {
   return oddsPayload(state, null);
 }
 
-async function pushOddsFromSidecar(request, env) {
-  const expectedSecret = String(env?.ODDS_SERVICE_SECRET || "").trim();
-  if (expectedSecret) {
-    const headerSecret = String(request.headers.get("x-odds-secret") || "").trim();
-    if (!headerSecret || headerSecret !== expectedSecret) throw new Error("forbidden");
+async function resetOddsFromApi(request, env) {
+  const payload = await readRequestJson(request);
+  const matchId = oddsMatchKey(payload.matchId);
+  const current = await getOddsStatePersistent(env, matchId);
+  const updatedAt = new Date().toISOString();
+  const keepAuto = Boolean(current.winlineUrl) || Boolean(current.autoUpdate);
+  const nextMode = current.mode === "manual" && current.winlineUrl ? "url" : (current.mode || "url");
+  const state = await setOddsStatePersistent(env, matchId, {
+    source: current.source || "winline",
+    mode: nextMode,
+    autoUpdate: keepAuto,
+    odds: { player1: null, player2: null },
+    updatedAt,
+    lastError: null,
+    stale: true
+  });
+  if (state.autoUpdate && state.winlineUrl) {
+    const refreshed = await refreshWinlineOddsState(matchId, env, { force: true });
+    return oddsPayload(refreshed, env);
   }
+  return oddsPayload(state, env);
+}
+
+async function oddsDebug(url, env) {
+  const matchId = oddsMatchKey(url.searchParams.get("matchId") || url.searchParams.get("eventId") || "");
+  let state = await getOddsStatePersistent(env, matchId);
+  if (state.autoUpdate && state.winlineUrl && String(url.searchParams.get("refresh") || "0") === "1") {
+    state = await refreshWinlineOddsState(matchId, env, { force: true });
+  }
+  const rawStateOdds = {
+    player1: state?.odds?.player1 ?? null,
+    player2: state?.odds?.player2 ?? null
+  };
+  const sanitized = sanitizeOddsForDisplay(rawStateOdds, {
+    source: state?.source || "winline",
+    mode: state?.mode || "off"
+  });
+  return {
+    ok: true,
+    buildVersion: BUILD_VERSION,
+    matchId,
+    source: state?.source || "winline",
+    mode: state?.mode || "off",
+    autoUpdate: Boolean(state?.autoUpdate),
+    winlineUrl: state?.winlineUrl || null,
+    marketTitle: state?.marketTitle || null,
+    rawStateOdds,
+    sanitizedOdds: sanitized.odds,
+    invalid: !sanitized.valid,
+    invalidReason: sanitized.reason,
+    lastParserResult: state?.lastParserResult || createOddsParserResult(),
+    lastError: state?.lastError || null,
+    updatedAt: state?.updatedAt || null,
+    lastSuccessAt: state?.lastSuccessAt || null
+  };
+}
+
+async function pushOddsFromSidecar(request, env) {
+  const expectedSecret = String(env?.ODDS_PUSH_SECRET || env?.ODDS_SERVICE_SECRET || "").trim();
+  if (!expectedSecret) throw new Error("odds-push-secret-not-configured");
+  const headerSecret = String(request.headers.get("x-odds-secret") || "").trim();
+  if (!headerSecret || headerSecret !== expectedSecret) throw new Error("forbidden");
+
   const payload = await readRequestJson(request);
   const matchId = oddsMatchKey(payload.matchId);
   const player1 = parseOddValue(payload.player1 ?? payload.home ?? payload.homeOdd);
   const player2 = parseOddValue(payload.player2 ?? payload.away ?? payload.awayOdd);
-  if (!player1 && !player2) throw new Error("At least one odd is required");
-  const current = getOddsState(matchId);
+  const current = await getOddsStatePersistent(env, matchId);
+
   const timestamp = String(payload.updatedAt || "").trim() || new Date().toISOString();
-  const state = setOddsState(matchId, {
-    source: payload.source || "winline",
-    mode: current.mode === "manual" ? "manual" : current.mode || "url",
-    autoUpdate: current.mode === "manual" ? false : true,
-    odds: {
-      player1: player1 || current.odds.player1 || null,
-      player2: player2 || current.odds.player2 || null
-    },
+  const source = normalizeFreeText(payload.source || current.source || "winline-playwright");
+  const marketTitle = normalizeFreeText(payload.marketTitle || "");
+  const payloadError = normalizeFreeText(payload.error || "");
+  const incomingWinlineUrlRaw = String(payload.winlineUrl || "").trim();
+  let incomingWinlineUrl = "";
+  if (incomingWinlineUrlRaw) {
+    try {
+      incomingWinlineUrl = normalizeWinlineUrl(incomingWinlineUrlRaw);
+    } catch (_error) {
+      incomingWinlineUrl = "";
+    }
+  }
+
+  const sidecarSource = source.toLowerCase().includes("playwright") || source.toLowerCase().includes("sidecar");
+  const mode = current.mode === "manual"
+    ? "manual"
+    : (sidecarSource ? "sidecar" : (current.mode === "off" ? "url" : current.mode || "url"));
+  const autoUpdate = current.mode === "manual" ? false : !sidecarSource;
+  const isNullPush = player1 === null && player2 === null;
+  const sanitized = sanitizeOddsForDisplay({ player1, player2 }, { source, mode });
+
+  const hasValidPair = Boolean(sanitized.valid && sanitized.odds.player1 && sanitized.odds.player2);
+  const nextOdds = hasValidPair
+    ? {
+        player1: sanitized.odds.player1,
+        player2: sanitized.odds.player2
+      }
+    : { player1: null, player2: null };
+  const nextLastSuccessAt = hasValidPair ? timestamp : current.lastSuccessAt;
+  const nextLastError = hasValidPair
+    ? null
+    : (
+      payloadError
+      || (isNullPush ? "Match winner market not found" : `Odds rejected: ${sanitized.reason || "invalid"}`)
+    );
+
+  const state = await setOddsStatePersistent(env, matchId, {
+    source,
+    mode,
+    autoUpdate,
+    odds: nextOdds,
     updatedAt: timestamp,
-    lastSuccessAt: timestamp,
-    lastError: null,
-    stale: false
+    lastSuccessAt: nextLastSuccessAt,
+    lastError: nextLastError,
+    winlineUrl: current.winlineUrl || incomingWinlineUrl || "",
+    marketTitle: marketTitle || current.marketTitle || "",
+    stale: !hasValidPair
   });
   return oddsPayload(state, env);
 }
 
 function oddsSummary(custom = {}, oddsState = null) {
+  const manualHomeValue = custom.homeOdd || (custom.odds && custom.odds.manualPlayer1) || "";
+  const manualAwayValue = custom.awayOdd || (custom.odds && custom.odds.manualPlayer2) || "";
   const sourceLabel = oddsState
     ? `${oddsState.mode || "off"}${oddsState.autoUpdate ? ", авто" : ", ручной"}`
-    : custom.homeOdd || custom.awayOdd
+    : manualHomeValue || manualAwayValue
       ? "manual, ручной"
       : "авто";
+  const sanitizedState = sanitizeOddsForDisplay(
+    {
+      player1: oddsState?.odds?.player1 ?? null,
+      player2: oddsState?.odds?.player2 ?? null
+    },
+    {
+      source: oddsState?.source || "winline",
+      mode: oddsState?.mode || "off"
+    }
+  );
+  const manualHome = oddsToDisplay(manualHomeValue);
+  const manualAway = oddsToDisplay(manualAwayValue);
   return {
-    home: custom.homeOdd || oddsState?.odds?.player1 || "авто",
-    away: custom.awayOdd || oddsState?.odds?.player2 || "авто",
+    home: manualHome || sanitizedState.odds.player1 || "-",
+    away: manualAway || sanitizedState.odds.player2 || "-",
     mode: sourceLabel
   };
 }
@@ -1290,6 +2320,57 @@ async function handleTelegramUpdate(update, env, origin) {
       return;
     }
 
+    if (command === "/admin_match_settings_debug" || command === "admin_match_settings_debug") {
+      const args = textValue.split(/\s+/).slice(1).filter(Boolean);
+      if (!args.length) {
+        await telegramApi(env, "sendMessage", {
+          chat_id: chatId,
+          text: "Формат: /admin_match_settings_debug <matchId> [mode] [speed] [program]"
+        });
+        return;
+      }
+      const matchId = String(args[0] || "").trim();
+      const modeArg = BOT_MODES.has(String(args[1] || "").toLowerCase()) ? String(args[1]).toLowerCase() : "stats";
+      const speedArg = TICKER_SPEEDS[String(args[2] || "").toLowerCase()] ? String(args[2]).toLowerCase() : "normal";
+      const programArg = PROGRAM_LABELS[String(args[3] || "").toLowerCase()] ? String(args[3]).toLowerCase() : "obs";
+      const match = await findMatch(env, matchId);
+      const custom = getOverlayCustom(chatId, matchId, programArg, modeArg, speedArg);
+      const oddsState = getOddsState(matchId);
+      const sessionKey = overlaySessionKey(chatId, matchId, programArg, modeArg, speedArg);
+      const payload = {
+        chatId,
+        matchId,
+        sessionKey,
+        hasSession: overlayCustomBySession.has(sessionKey),
+        custom,
+        userOverrides: {
+          player1: (custom.player1 && custom.player1.manualOverrides) || {},
+          player2: (custom.player2 && custom.player2.manualOverrides) || {}
+        },
+        settingsUpdatedAt: custom.updatedAt || null,
+        oddsState,
+        oddsLastSuccessAtMsk: formatIsoTime(oddsState.lastSuccessAt || oddsState.updatedAt),
+        oddsSettings: custom.odds || {},
+        sourceMatch: match
+          ? {
+              id: match.id || null,
+              home: match.home?.name || null,
+              away: match.away?.name || null,
+              tournament: match.tournament || null,
+              status: match.status || null,
+              startTimeUnix: Number(match.startTimeUnix || 0) || null
+            }
+          : null,
+        matchFound: Boolean(match),
+        matchTitle: match ? `${match.home?.name || ""} - ${match.away?.name || ""}` : null
+      };
+      await telegramApi(env, "sendMessage", {
+        chat_id: chatId,
+        text: truncate(JSON.stringify(payload, null, 2), 3600)
+      });
+      return;
+    }
+
     await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
       text: [
         "Давай начнем с простого сценария.",
@@ -1300,7 +2381,10 @@ async function handleTelegramUpdate(update, env, origin) {
         "4) Выбери режим",
         "",
         "Для ручных правок доступны команды:",
-        "/edit_names, /edit_codes, /edit_countries, /edit_stage, /edit_odds"
+        "/edit_names, /edit_codes, /edit_countries, /edit_stage, /edit_odds",
+        "",
+        "Отладка:",
+        "/admin_match_settings_debug <matchId>"
       ].join("\n")
     });
     return;
@@ -1574,6 +2658,42 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       rememberPendingEdit(chatId, replyMessageId, { matchId, program, mode, speed, block: "odds" });
     }
     await answerCallback(env, callbackId);
+    return;
+  }
+
+  if (data.startsWith("owe|")) {
+    const [, matchId, program, mode, speed] = data.split("|");
+    const match = await findMatch(env, matchId);
+    if (!match) {
+      await answerCallback(env, callbackId, "Матч уже недоступен", true);
+      return;
+    }
+    const current = getOddsState(match.id);
+    if (!current.winlineUrl) {
+      const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+      await replaceFlowMessage(env, chatId, messageId, {
+        text: winlineMenuText(match, program, mode, speed, custom, current),
+        reply_markup: winlineMenu(match, program, mode, speed),
+        disable_web_page_preview: true
+      });
+      await answerCallback(env, callbackId, "Сначала подключи ссылку Winline", true);
+      return;
+    }
+    const nextState = setOddsState(match.id, {
+      source: current.source || "winline",
+      mode: current.mode === "manual" ? "url" : (current.mode || "url"),
+      autoUpdate: true,
+      updatedAt: new Date().toISOString(),
+      lastError: null
+    });
+    const refreshed = await refreshWinlineOddsState(match.id, env, { force: true });
+    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    await replaceFlowMessage(env, chatId, messageId, {
+      text: overlayInstructions(origin, match, program, mode, speed, custom),
+      reply_markup: readyMenu(match, program, mode, speed, custom),
+      disable_web_page_preview: true
+    });
+    await answerCallback(env, callbackId, (refreshed || nextState).lastError ? "Авто включено, но есть ошибка обновления" : "Winline включен");
     return;
   }
 
@@ -1889,11 +3009,27 @@ function readyMenu(match, program, mode, speed, custom = {}) {
   }
   if (mode === "stats") {
     const delay = statsDelaySeconds(custom.statsDelaySec);
+    const oddsState = getOddsState(match.id);
+    const summary = oddsSummary(custom, oddsState);
+    const winlineConnected = Boolean(oddsState.winlineUrl);
+    const winlineAuto = Boolean(oddsState.autoUpdate);
+    const statusText = winlineConnected
+      ? (winlineAuto ? "подключено" : "подключено (пауза)")
+      : "не подключено";
     rows.push([
       button("\u22125 \u0441\u0435\u043a", `d|${match.id}|${program}|${mode}|${speed}|dec`),
       button("+5 \u0441\u0435\u043a", `d|${match.id}|${program}|${mode}|${speed}|inc`)
     ]);
     rows.push([button(`\u0417\u0430\u0434\u0435\u0440\u0436\u043a\u0430 \u0433\u0440\u0430\u0444\u0438\u043a\u0438: ${delay} \u0441\u0435\u043a`, `d|${match.id}|${program}|${mode}|${speed}|show`)]);
+    rows.push([button(`Кэфы Winline: ${statusText}`, `ow|${match.id}|${program}|${mode}|${speed}`)]);
+    rows.push([
+      button("Включить Winline", `owe|${match.id}|${program}|${mode}|${speed}`),
+      button("Отключить Winline", `owx|${match.id}|${program}|${mode}|${speed}`)
+    ]);
+    rows.push([
+      button(`Кэфы: ${summary.home} / ${summary.away}`, `ow|${match.id}|${program}|${mode}|${speed}`),
+      button("Обновить кэфы", `owr|${match.id}|${program}|${mode}|${speed}`)
+    ]);
     rows.push([button("\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0431\u043b\u043e\u043a\u0438", `e|${match.id}|${program}|${mode}|${speed}`)]);
   }
   rows.push([button("\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0434\u0440\u0443\u0433\u0443\u044e \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0443", `m|${match.id}`)]);
@@ -2047,27 +3183,171 @@ function parseReplyEditPayload(block, textValue) {
   return { ok: false, hint: "" };
 }
 
-function overlaySessionKey(chatId, matchId, program, mode, speed) {
-  return [String(chatId || ""), String(matchId || ""), String(program || ""), String(mode || ""), String(speed || "")].join("|");
+function overlaySessionKey(chatId, matchId, _program, _mode, _speed) {
+  // Match settings are shared across mode/speed/program in one chat.
+  return [String(chatId || ""), String(matchId || "")].join("|");
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMergeMatchSettings(baseValue, patchValue) {
+  const base = isPlainObject(baseValue) ? { ...baseValue } : {};
+  const patch = isPlainObject(patchValue) ? patchValue : {};
+  for (const key of Object.keys(patch)) {
+    const nextValue = patch[key];
+    if (nextValue === undefined) continue;
+    if (isPlainObject(nextValue) && isPlainObject(base[key])) {
+      base[key] = deepMergeMatchSettings(base[key], nextValue);
+    } else if (isPlainObject(nextValue)) {
+      base[key] = deepMergeMatchSettings({}, nextValue);
+    } else if (Array.isArray(nextValue)) {
+      base[key] = nextValue.slice();
+    } else {
+      base[key] = nextValue;
+    }
+  }
+  return base;
+}
+
+function legacyPatchToMatchSettingsPatch(patch) {
+  const input = isPlainObject(patch) ? patch : {};
+  const out = deepMergeMatchSettings({}, input);
+  out.player1 = out.player1 || {};
+  out.player2 = out.player2 || {};
+  out.player1.manualOverrides = out.player1.manualOverrides || {};
+  out.player2.manualOverrides = out.player2.manualOverrides || {};
+  out.odds = out.odds || {};
+
+  if (Object.prototype.hasOwnProperty.call(input, "homeName")) out.player1.manualOverrides.displayName = input.homeName;
+  if (Object.prototype.hasOwnProperty.call(input, "awayName")) out.player2.manualOverrides.displayName = input.awayName;
+  if (Object.prototype.hasOwnProperty.call(input, "homeCode")) out.player1.manualOverrides.shortName = input.homeCode;
+  if (Object.prototype.hasOwnProperty.call(input, "awayCode")) out.player2.manualOverrides.shortName = input.awayCode;
+  if (Object.prototype.hasOwnProperty.call(input, "homeCountry")) out.player1.manualOverrides.country = input.homeCountry;
+  if (Object.prototype.hasOwnProperty.call(input, "awayCountry")) out.player2.manualOverrides.country = input.awayCountry;
+  if (Object.prototype.hasOwnProperty.call(input, "homeOdd")) out.odds.manualPlayer1 = input.homeOdd;
+  if (Object.prototype.hasOwnProperty.call(input, "awayOdd")) out.odds.manualPlayer2 = input.awayOdd;
+  return out;
+}
+
+function normalizeMatchSettings(settings) {
+  const next = deepMergeMatchSettings({}, settings || {});
+  next.player1 = isPlainObject(next.player1) ? next.player1 : {};
+  next.player2 = isPlainObject(next.player2) ? next.player2 : {};
+  next.player1.manualOverrides = isPlainObject(next.player1.manualOverrides) ? next.player1.manualOverrides : {};
+  next.player2.manualOverrides = isPlainObject(next.player2.manualOverrides) ? next.player2.manualOverrides : {};
+  next.odds = isPlainObject(next.odds) ? next.odds : {};
+
+  const homeName = normalizeFreeText(next.homeName || next.player1.manualOverrides.displayName || "");
+  const awayName = normalizeFreeText(next.awayName || next.player2.manualOverrides.displayName || "");
+  const homeCode = normalizeCountryCode(next.homeCode || next.player1.manualOverrides.shortName || "");
+  const awayCode = normalizeCountryCode(next.awayCode || next.player2.manualOverrides.shortName || "");
+  const homeCountry = normalizeCountryCode(next.homeCountry || next.player1.manualOverrides.country || "");
+  const awayCountry = normalizeCountryCode(next.awayCountry || next.player2.manualOverrides.country || "");
+  const stage = normalizeFreeText(next.stage || "");
+  const manualHomeOdd = cleanOdd(next.homeOdd || next.odds.manualPlayer1 || "");
+  const manualAwayOdd = cleanOdd(next.awayOdd || next.odds.manualPlayer2 || "");
+  const delay = statsDelaySeconds(next.statsDelaySec);
+  const size = tickerSizeKey(next.tickerSize);
+
+  if (homeName) {
+    next.homeName = homeName;
+    next.player1.manualOverrides.displayName = homeName;
+  } else {
+    delete next.homeName;
+    delete next.player1.manualOverrides.displayName;
+  }
+  if (awayName) {
+    next.awayName = awayName;
+    next.player2.manualOverrides.displayName = awayName;
+  } else {
+    delete next.awayName;
+    delete next.player2.manualOverrides.displayName;
+  }
+  if (homeCode) {
+    next.homeCode = homeCode;
+    next.player1.manualOverrides.shortName = homeCode;
+  } else {
+    delete next.homeCode;
+    delete next.player1.manualOverrides.shortName;
+  }
+  if (awayCode) {
+    next.awayCode = awayCode;
+    next.player2.manualOverrides.shortName = awayCode;
+  } else {
+    delete next.awayCode;
+    delete next.player2.manualOverrides.shortName;
+  }
+  if (homeCountry) {
+    next.homeCountry = homeCountry;
+    next.player1.manualOverrides.country = homeCountry;
+  } else {
+    delete next.homeCountry;
+    delete next.player1.manualOverrides.country;
+  }
+  if (awayCountry) {
+    next.awayCountry = awayCountry;
+    next.player2.manualOverrides.country = awayCountry;
+  } else {
+    delete next.awayCountry;
+    delete next.player2.manualOverrides.country;
+  }
+  if (stage) next.stage = stage;
+  else delete next.stage;
+
+  if (manualHomeOdd) {
+    next.homeOdd = manualHomeOdd;
+    next.odds.manualPlayer1 = manualHomeOdd;
+  } else {
+    delete next.homeOdd;
+    delete next.odds.manualPlayer1;
+  }
+  if (manualAwayOdd) {
+    next.awayOdd = manualAwayOdd;
+    next.odds.manualPlayer2 = manualAwayOdd;
+  } else {
+    delete next.awayOdd;
+    delete next.odds.manualPlayer2;
+  }
+
+  if (delay > 0) next.statsDelaySec = delay;
+  else delete next.statsDelaySec;
+
+  if (size !== "normal") next.tickerSize = size;
+  else delete next.tickerSize;
+
+  next.odds.provider = String(next.odds.provider || "winline");
+  if (!next.odds.mode) {
+    next.odds.mode = manualHomeOdd || manualAwayOdd ? "manual" : "auto";
+  }
+  next.updatedAt = new Date().toISOString();
+  return next;
 }
 
 function getOverlayCustom(chatId, matchId, program, mode, speed) {
-  return overlayCustomBySession.get(overlaySessionKey(chatId, matchId, program, mode, speed)) || {};
+  const key = overlaySessionKey(chatId, matchId, program, mode, speed);
+  const current = overlayCustomBySession.get(key) || {};
+  return normalizeMatchSettings(current);
 }
 
-function setOverlayCustom(chatId, matchId, program, mode, speed, patch) {
+function updateMatchSettings(chatId, matchId, program, mode, speed, patch) {
   const key = overlaySessionKey(chatId, matchId, program, mode, speed);
   const current = getOverlayCustom(chatId, matchId, program, mode, speed);
-  const next = { ...current, ...patch };
-  for (const prop of ["homeName", "awayName", "homeCode", "awayCode", "homeCountry", "awayCountry", "stage", "homeOdd", "awayOdd", "tickerSize", "statsDelaySec"]) {
-    if (!String(next[prop] ?? "").trim()) delete next[prop];
-  }
-  if (!Object.keys(next).length) {
+  const mappedPatch = legacyPatchToMatchSettingsPatch(patch || {});
+  const merged = deepMergeMatchSettings(current, mappedPatch);
+  const next = normalizeMatchSettings(merged);
+  const significantKeys = Object.keys(next).filter((item) => item !== "updatedAt");
+  if (!significantKeys.length) {
     overlayCustomBySession.delete(key);
     return {};
   }
   overlayCustomBySession.set(key, next);
   return next;
+}
+
+function setOverlayCustom(chatId, matchId, program, mode, speed, patch) {
+  return updateMatchSettings(chatId, matchId, program, mode, speed, patch);
 }
 
 function pendingEditKey(chatId, replyMessageId) {
@@ -2095,12 +3375,14 @@ function normalizeFreeText(value) {
 
 function customSummaryLines(custom = {}) {
   const delay = statsDelaySeconds(custom.statsDelaySec);
+  const manualHomeOdd = custom.homeOdd || (custom.odds && custom.odds.manualPlayer1) || "";
+  const manualAwayOdd = custom.awayOdd || (custom.odds && custom.odds.manualPlayer2) || "";
   return [
     `Фамилии: ${custom.homeName || "авто"} / ${custom.awayName || "авто"}`,
     `Короткие (статистика): ${custom.homeCode || "авто"} / ${custom.awayCode || "авто"}`,
     `Страны (табло): ${custom.homeCountry || "авто"} / ${custom.awayCountry || "авто"}`,
     `Стадия: ${custom.stage || "авто"}`,
-    `Коэффициенты: ${custom.homeOdd || "авто"} / ${custom.awayOdd || "авто"}`,
+    `Коэффициенты: ${manualHomeOdd || "авто"} / ${manualAwayOdd || "авто"}`,
     `Задержка графики: ${delay} сек`,
     `Размер строки: ${TICKER_SIZES[tickerSizeKey(custom.tickerSize)].label}`
   ];
@@ -2222,10 +3504,11 @@ function winlineMenu(match, program, mode, speed) {
   return keyboard([
     [button("🔗 Вставить ссылку на матч Winline", `owl|${match.id}|${program}|${mode}|${speed}`)],
     [button("🔍 Найти матч автоматически", `owa|${match.id}|${program}|${mode}|${speed}`)],
-    [button("✍️ Ввести кэфы вручную", `owm|${match.id}|${program}|${mode}|${speed}`)],
-    [button("🔄 Обновить сейчас", `owr|${match.id}|${program}|${mode}|${speed}`)],
+    [button("✅ Включить автообновление", `owe|${match.id}|${program}|${mode}|${speed}`)],
     [button("⛔ Отключить автообновление", `owx|${match.id}|${program}|${mode}|${speed}`)],
-    [button("⬅️ Назад", `e|${match.id}|${program}|${mode}|${speed}`)]
+    [button("🔄 Обновить коэффициенты", `owr|${match.id}|${program}|${mode}|${speed}`)],
+    [button("✍️ Ручные коэффициенты (блоки)", `eo|${match.id}|${program}|${mode}|${speed}`)],
+    [button("⬅️ Назад", `r|${match.id}|${program}|${mode}`)]
   ]);
 }
 
@@ -2236,9 +3519,9 @@ function winlineMenuText(match, program, mode, speed, custom = {}, state = null)
   const link = oddsState.winlineUrl ? truncate(oddsState.winlineUrl, 130) : "не подключена";
   const auto = oddsState.autoUpdate ? "включено" : "выключено";
   return [
-    "🎰 Кэфы Winline",
+    "🎰 Коэффициенты Winline",
     "",
-    "Выбери способ подключения:",
+    "Выбери способ подключения и обновления:",
     "",
     `${match.home.name} — ${match.away.name}`,
     `Программа: ${PROGRAM_LABELS[program] || program}`,
@@ -2249,6 +3532,7 @@ function winlineMenuText(match, program, mode, speed, custom = {}, state = null)
     `Автообновление: ${auto}`,
     `Ссылка Winline: ${link}`,
     `Stale: ${stale}`,
+    "Ручной ввод кэфов: «Редактировать блоки» → «Коэффициенты».",
     oddsState.lastError ? `Ошибка: ${oddsState.lastError}` : ""
   ].filter(Boolean).join("\n");
 }
@@ -2308,11 +3592,16 @@ async function applyWinlineLinkFromChat(env, origin, chatId, parsed) {
 
   const custom = getOverlayCustom(chatId, match.id, parsed.program, modeKey, speedKey);
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+  const linkedHome = state?.odds?.player1 ?? null;
+  const linkedAway = state?.odds?.player2 ?? null;
+  const linkedOddsLine = linkedHome && linkedAway
+    ? `Текущие кэфы: ${linkedHome} / ${linkedAway}`
+    : "Кэфы исхода матча сейчас не найдены: - / -";
   await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
     text: [
       "✅ Матч Winline подключён.",
       "",
-      `Текущие кэфы: ${state.odds.player1 || "—"} / ${state.odds.player2 || "—"}`,
+      linkedOddsLine,
       state.lastError ? `⚠️ ${state.lastError}` : "Автообновление включено.",
       "",
       `URL:\n${url}`,
@@ -2554,6 +3843,25 @@ function formatStartTime(unixSeconds) {
   }
 }
 
+function formatIsoTime(isoValue) {
+  const raw = String(isoValue || "").trim();
+  if (!raw) return "";
+  const ms = Date.parse(raw);
+  if (!ms || isNaN(ms)) return "";
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: BOT_DISPLAY_TZ
+    }).format(new Date(ms));
+  } catch (_error) {
+    return "";
+  }
+}
+
 function upcomingHint(match) {
   if (match.status !== "scheduled") return "";
   const start = formatStartTime(match.startTimeUnix);
@@ -2617,6 +3925,11 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
   const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
   const sizeKey = tickerSizeKey(custom.tickerSize);
   const delay = statsDelaySeconds(custom.statsDelaySec);
+  const oddsState = getOddsState(match.id);
+  const odds = oddsSummary(custom, oddsState);
+  const winlineStatus = oddsState.winlineUrl
+    ? (oddsState.autoUpdate ? "подключено" : "подключено (пауза)")
+    : "не подключено";
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
   if (modeKey === "ticker") {
     const tickerLines = [
@@ -2648,6 +3961,8 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
     `Режим: ${modeLabel(modeKey)}`,
     `Скорость строки: ${TICKER_SPEEDS[speedKey].label} (${TICKER_SPEEDS[speedKey].pixelsPerSecond})`,
     `Задержка графики: ${delay} сек`,
+    `Winline: ${winlineStatus}`,
+    `Кэфы: ${odds.home} / ${odds.away}`,
     "",
     "URL:",
     url,
@@ -2682,8 +3997,10 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
     home: match.home?.name || "",
     away: match.away?.name || ""
   });
-  if (custom.homeOdd) oddsQuery.set("homeOdd", custom.homeOdd);
-  if (custom.awayOdd) oddsQuery.set("awayOdd", custom.awayOdd);
+  const manualHomeOdd = custom.homeOdd || (custom.odds && custom.odds.manualPlayer1) || "";
+  const manualAwayOdd = custom.awayOdd || (custom.odds && custom.odds.manualPlayer2) || "";
+  if (manualHomeOdd) oddsQuery.set("homeOdd", manualHomeOdd);
+  if (manualAwayOdd) oddsQuery.set("awayOdd", manualAwayOdd);
   const oddsSource = `/api/odds/current?${oddsQuery.toString()}`;
   const tickerSpeed = TICKER_SPEEDS[speed]?.pixelsPerSecond || 100;
   const query = new URLSearchParams({
@@ -2702,8 +4019,8 @@ function overlayPageUrl(origin, match, mode, speed = "normal", custom = {}) {
   if (custom.homeCountry) query.set("homeCountry", custom.homeCountry);
   if (custom.awayCountry) query.set("awayCountry", custom.awayCountry);
   if (custom.stage) query.set("stage", custom.stage);
-  if (custom.homeOdd) query.set("homeOdd", custom.homeOdd);
-  if (custom.awayOdd) query.set("awayOdd", custom.awayOdd);
+  if (manualHomeOdd) query.set("homeOdd", manualHomeOdd);
+  if (manualAwayOdd) query.set("awayOdd", manualAwayOdd);
   const delay = statsDelaySeconds(custom.statsDelaySec);
   if (delay > 0) query.set("delay", String(delay));
   return `${origin}/overlay.html?${query.toString()}`;
@@ -4370,12 +5687,18 @@ function oddsUrl() {
   return \`\${url.pathname}\${url.search}\`;
 }
 
+function formatOdds(value) {
+  const numeric = Number(String(value ?? "").replace(",", "."));
+  if (!Number.isFinite(numeric)) return "-";
+  return numeric.toFixed(2);
+}
+
 function renderOdds(payload) {
   const odds = payload && payload.odds ? payload.odds : {};
   const home = odds.home ?? odds.player1 ?? null;
   const away = odds.away ?? odds.player2 ?? null;
-  refs.homeOdds.textContent = home || "--";
-  refs.awayOdds.textContent = away || "--";
+  refs.homeOdds.textContent = formatOdds(home);
+  refs.awayOdds.textContent = formatOdds(away);
 }
 
 async function refreshMatch() {
