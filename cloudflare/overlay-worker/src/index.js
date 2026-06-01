@@ -2685,42 +2685,61 @@ body {
 
 .set-cell {
   position: relative;
-  isolation: isolate;
   width: 46px;
   height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.set-main {
+  position: relative;
+  z-index: 1;
+  min-width: 32px;
+  text-align: center;
   color: #111;
   font-size: 34px;
   font-weight: 600;
   line-height: 1;
 }
 
-.set-cell.winner {
-  color: #fff;
-  font-weight: 900;
-}
-
-.set-cell.winner::before {
-  content: "";
-  position: absolute;
+.set-main.won {
   width: 42px;
   height: 42px;
-  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
   background: var(--purple);
-  z-index: -1;
-}
-
-.set-cell.tie-break {
-  background: #dc203f;
   color: #fff;
-  border-radius: 6px;
   font-weight: 900;
 }
 
-.set-cell.tie-break::before {
-  display: none;
+.tie-break-index {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  color: #111;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.set-cell.tie-break .set-main {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #dc203f;
+  color: #fff;
+  font-weight: 900;
+}
+
+.set-cell.tie-break .set-main.won {
+  background: #dc203f;
 }
 
 .ticker {
@@ -3151,28 +3170,101 @@ function setWinner(set) {
   return home > away ? "home" : "away";
 }
 
+function setGameNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function isFinishedTieBreakScore(home, away) {
+  if (!isCompletedSet(home, away)) return false;
+  const max = Math.max(home, away);
+  const min = Math.min(home, away);
+  return max >= 8 && min >= 6 && max - min === 2;
+}
+
+function normalizeSetForDisplay(set) {
+  const rawHome = setGameNumber(set && set.homeGames);
+  const rawAway = setGameNumber(set && set.awayGames);
+
+  if (!Number.isFinite(rawHome) || !Number.isFinite(rawAway)) {
+    return {
+      homeMain: asText(set && set.homeGames, ""),
+      awayMain: asText(set && set.awayGames, ""),
+      homeTieBreak: "",
+      awayTieBreak: "",
+      winner: "",
+      tieBreakLive: false
+    };
+  }
+
+  let homeMain = rawHome;
+  let awayMain = rawAway;
+  let homeTieBreak = "";
+  let awayTieBreak = "";
+
+  if (isFinishedTieBreakScore(rawHome, rawAway)) {
+    homeTieBreak = String(rawHome);
+    awayTieBreak = String(rawAway);
+    if (rawHome > rawAway) {
+      homeMain = 7;
+      awayMain = 6;
+    } else {
+      homeMain = 6;
+      awayMain = 7;
+    }
+  }
+
+  const winner = isCompletedSet(homeMain, awayMain)
+    ? (homeMain > awayMain ? "home" : "away")
+    : "";
+  const tieBreakLive = !homeTieBreak && !awayTieBreak && (Boolean(set && set.tieBreak) || (homeMain === 6 && awayMain === 6));
+
+  return {
+    homeMain: String(homeMain),
+    awayMain: String(awayMain),
+    homeTieBreak,
+    awayTieBreak,
+    winner,
+    tieBreakLive
+  };
+}
+
+function renderSetCell(cell, mainScore, tieBreakScore, won) {
+  cell.replaceChildren();
+
+  const main = document.createElement("span");
+  main.className = "set-main";
+  if (won) main.classList.add("won");
+  main.textContent = asText(mainScore, "");
+  cell.appendChild(main);
+
+  if (tieBreakScore) {
+    const tieBreak = document.createElement("span");
+    tieBreak.className = "tie-break-index";
+    tieBreak.textContent = String(tieBreakScore);
+    cell.appendChild(tieBreak);
+  }
+}
+
 function renderSets(data) {
   const sets = (data && data.score && Array.isArray(data.score.sets)) ? data.score.sets : [];
   for (let i = 0; i < 5; i += 1) {
     const set = sets[i] || {};
     const home = document.querySelector(\`#homeSet\${i + 1}\`);
     const away = document.querySelector(\`#awaySet\${i + 1}\`);
-    home.textContent = asText(set.homeGames, "");
-    away.textContent = asText(set.awayGames, "");
+    if (!home || !away) continue;
 
     home.classList.remove("tie-break", "winner");
     away.classList.remove("tie-break", "winner");
 
-    const tieBreak = Boolean(set.tieBreak) || (String(set.homeGames) === "6" && String(set.awayGames) === "6");
-    if (tieBreak) {
+    const display = normalizeSetForDisplay(set);
+    renderSetCell(home, display.homeMain, display.homeTieBreak, display.winner === "home");
+    renderSetCell(away, display.awayMain, display.awayTieBreak, display.winner === "away");
+
+    if (display.tieBreakLive) {
       home.classList.add("tie-break");
       away.classList.add("tie-break");
-      continue;
     }
-
-    const winner = setWinner(set);
-    if (winner === "home") home.classList.add("winner");
-    if (winner === "away") away.classList.add("winner");
   }
 }
 
