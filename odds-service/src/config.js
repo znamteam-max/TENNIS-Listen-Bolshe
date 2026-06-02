@@ -16,12 +16,16 @@ function asBoolean(value, fallback = true) {
 
 export function getConfig() {
   const config = {
-    workerBaseUrl: String(process.env.WORKER_BASE_URL || "").trim(),
+    workerBaseUrl: String(process.env.WORKER_BASE_URL || "").trim().replace(/\/+$/, ""),
     oddsPushSecret: String(process.env.ODDS_PUSH_SECRET || "").trim(),
     pollIntervalMs: asPositiveInt(process.env.POLL_INTERVAL_MS, 7000),
     headless: asBoolean(process.env.HEADLESS, true),
     pageTimeoutMs: asPositiveInt(process.env.PAGE_TIMEOUT_MS, 45000),
-    settleDelayMs: asPositiveInt(process.env.SETTLE_DELAY_MS, 5000)
+    settleDelayMs: asPositiveInt(process.env.SETTLE_DELAY_MS, 5000),
+    servicePort: asPositiveInt(process.env.ODDS_SERVICE_PORT, 3010),
+    serviceSecret: String(process.env.ODDS_SERVICE_SECRET || process.env.ODDS_PUSH_SECRET || "").trim(),
+    activeFetchTimeoutMs: asPositiveInt(process.env.ACTIVE_FETCH_TIMEOUT_MS, 8000),
+    allowFallbackActiveMatches: asBoolean(process.env.ALLOW_FALLBACK_ACTIVE_MATCHES, false)
   };
 
   const missing = [];
