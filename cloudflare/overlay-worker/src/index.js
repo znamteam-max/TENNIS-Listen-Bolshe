@@ -21,7 +21,7 @@ const NEWS_SOURCE_PAGES = 2;
 const UPCOMING_MATCH_WINDOW_SECONDS = 3 * 60 * 60;
 const UPCOMING_MATCH_LOOKBACK_SECONDS = 15 * 60;
 const BOT_DISPLAY_TZ = "Europe/Moscow";
-const NEWS_CTA = "СМОТРИ ПРЯМУЮ ТРАНСЛЯЦИЮ МАТЧА ПО ССЫЛКЕ";
+const NEWS_CTA = "Смотри прямую трансляцию матча в группе Больше! в ВК";
 const NEWS_SAFE_HARD_PATTERNS = [
   { reason: "ukraine", pattern: /украин|україн|ukrain/i },
   { reason: "belarus", pattern: /беларус|белорус|belarus/i },
@@ -5037,9 +5037,7 @@ const OVERLAY_HTML = `<!doctype html>
   <section class="ticker" aria-label="Новости">
     <div class="ticker-mask"><div id="tickerTrack" class="ticker-track">Загружаем новости...</div></div>
     <div id="tickerCta" class="ticker-cta" hidden>
-      <span class="ticker-cta-arrow">↓</span>
-      <span class="ticker-cta-text">СМОТРИ ПРЯМУЮ ТРАНСЛЯЦИЮ МАТЧА ПО ССЫЛКЕ</span>
-      <span class="ticker-cta-arrow">↓</span>
+      <span class="ticker-cta-text">Смотри прямую трансляцию матча в группе Больше! в ВК</span>
     </div>
   </section>
 </main>
@@ -5521,7 +5519,6 @@ body {
   justify-content: center;
   gap: 48px;
   color: #fff;
-  text-transform: uppercase;
   text-shadow: 0 2px 2px rgba(0, 0, 0, 0.24);
   font-family: "Sofia Sans Condensed", Arial, sans-serif;
   pointer-events: none;
