@@ -1651,6 +1651,74 @@ async function requestOddsServiceJson(env, endpointPath, payload) {
   };
 }
 
+async function getSidecarConnectionStatus(env) {
+  const config = oddsConfig(env);
+  if (!config.oddsServiceBaseUrl) {
+    return {
+      ok: false,
+      configured: false,
+      status: "not_configured",
+      message: "odds-service не подключён"
+    };
+  }
+
+  const endpoint = `${config.oddsServiceBaseUrl}/health`;
+  const headers = {};
+  if (config.oddsServiceSecret) headers["x-odds-secret"] = config.oddsServiceSecret;
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "GET",
+      headers,
+      signal: timeoutSignal(5000)
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      configured: true,
+      status: "unavailable",
+      endpoint,
+      message: "odds-service недоступен",
+      error: error?.message || String(error)
+    };
+  }
+
+  const rawText = await response.text();
+  let body = null;
+  try {
+    body = rawText ? JSON.parse(rawText) : null;
+  } catch (_error) {
+    body = null;
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      configured: true,
+      status: "unavailable",
+      endpoint,
+      httpStatus: response.status,
+      message: "odds-service недоступен",
+      error: body?.error || rawText || `HTTP ${response.status}`,
+      body
+    };
+  }
+
+  return {
+    ok: true,
+    configured: true,
+    status: "ok",
+    endpoint,
+    httpStatus: response.status,
+    message: "odds-service подключён",
+    body: body || {}
+  };
+}
+
+async function discoverWinlineMatches(env, payload) {
+  return requestOddsServiceJson(env, "/discover", payload);
+}
+
 async function discoverWinlineCandidateViaSidecar(match, env) {
   const requestPayload = {
     matchId: match.id,
@@ -1659,16 +1727,17 @@ async function discoverWinlineCandidateViaSidecar(match, env) {
     tournamentName: match.tournament || "",
     isLive: match.status === "live"
   };
-  return requestOddsServiceJson(env, "/discover", requestPayload);
+  return discoverWinlineMatches(env, requestPayload);
 }
 
-async function requestSidecarRefresh(match, env) {
-  const requestPayload = {
-    matchId: match.id,
-    winlineUrl: getOddsState(match.id)?.winlineUrl || "",
-    player1Name: match.home?.name || "",
-    player2Name: match.away?.name || ""
-  };
+async function requestSidecarRefresh(envOrMatch, matchIdOrEnv) {
+  let env = envOrMatch;
+  let matchId = matchIdOrEnv;
+  if (envOrMatch && typeof envOrMatch === "object" && envOrMatch.id && matchIdOrEnv && typeof matchIdOrEnv === "object") {
+    env = matchIdOrEnv;
+    matchId = envOrMatch.id;
+  }
+  const requestPayload = { matchId: oddsMatchKey(matchId) };
   return requestOddsServiceJson(env, "/refresh", requestPayload);
 }
 
@@ -2487,15 +2556,17 @@ async function handleTelegramUpdate(update, env, origin) {
 
       const speedKey = TICKER_SPEEDS[parsed.speed] ? parsed.speed : "normal";
       const modeKey = BOT_MODES.has(parsed.mode) ? parsed.mode : "stats";
-      const custom = {
+      const patch = {
         homeName: parsed.homeName,
         awayName: parsed.awayName,
         homeCode: parsed.homeCode,
         awayCode: parsed.awayCode,
         stage: parsed.stage
       };
-      setOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey, custom);
-      const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+      const beforeCustom = getOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey);
+      const beforeUrl = overlayPageUrl(origin, match, modeKey, speedKey, beforeCustom);
+      const custom = setOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey, patch);
+      const url = patchOverlayUrl(beforeUrl, overlayUrlPatchFromSettingsPatch(patch));
       await telegramApi(env, "sendMessage", {
         chat_id: chatId,
         text: [
@@ -2818,9 +2889,13 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       return;
     }
     const sizeKey = tickerSizeKey(size);
-    const custom = setOverlayCustom(chatId, match.id, program, mode, speed, { tickerSize: sizeKey });
+    const current = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const patch = { tickerSize: sizeKey };
+    const beforeUrl = overlayPageUrl(origin, match, mode, speed, current);
+    const custom = setOverlayCustom(chatId, match.id, program, mode, speed, patch);
+    const patchedUrl = patchOverlayUrl(beforeUrl, overlayUrlPatchFromSettingsPatch(patch));
     await replaceFlowMessage(env, chatId, messageId, {
-      text: overlayInstructions(origin, match, program, mode, speed, custom),
+      text: overlayInstructions(origin, match, program, mode, speed, custom, patchedUrl),
       reply_markup: readyMenuUnified(match, program, mode, speed, custom),
       disable_web_page_preview: true
     });
@@ -2853,9 +2928,11 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const delta = action === "dec" ? -STATS_DELAY_STEP_SECONDS : STATS_DELAY_STEP_SECONDS;
     const nextDelay = statsDelaySeconds(currentDelay + delta);
     const patch = { statsDelaySec: nextDelay > 0 ? nextDelay : "" };
+    const beforeUrl = overlayPageUrl(origin, match, mode, speedKey, current);
     const custom = setOverlayCustom(chatId, match.id, program, mode, speedKey, patch);
+    const patchedUrl = patchOverlayUrl(beforeUrl, overlayUrlPatchFromSettingsPatch(patch));
     await replaceFlowMessage(env, chatId, messageId, {
-      text: overlayInstructions(origin, match, program, mode, speedKey, custom),
+      text: overlayInstructions(origin, match, program, mode, speedKey, custom, patchedUrl),
       reply_markup: readyMenuUnified(match, program, mode, speedKey, custom),
       disable_web_page_preview: true
     });
@@ -2891,8 +2968,10 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const modeKey = BOT_MODES.has(mode) ? mode : "stats";
     const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
     const custom = getOverlayCustom(chatId, match.id, program, modeKey, speedKey);
+    const oddsState = await getOddsStatePersistent(env, match.id);
+    const sidecarStatus = await getSidecarConnectionStatus(env);
     await replaceFlowMessage(env, chatId, messageId, {
-      text: winlineMenuTextUnified(match, program, modeKey, custom, getOddsState(match.id)),
+      text: winlineMenuTextUnified(match, program, modeKey, custom, oddsState, sidecarStatus),
       reply_markup: winlineMenuUnified(match, program, modeKey, speedKey),
       disable_web_page_preview: true
     });
@@ -2933,8 +3012,9 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     const current = await getOddsStatePersistent(env, match.id);
     if (!current.winlineUrl) {
       const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+      const sidecarStatus = await getSidecarConnectionStatus(env);
       await replaceFlowMessage(env, chatId, messageId, {
-        text: winlineMenuTextUnified(match, program, mode, custom, current),
+        text: winlineMenuTextUnified(match, program, mode, custom, current, sidecarStatus),
         reply_markup: winlineMenuUnified(match, program, mode, speed),
         disable_web_page_preview: true
       });
@@ -2959,12 +3039,18 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       autoUpdate: true
     });
     const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const sidecarStatus = await getSidecarConnectionStatus(env);
+    const enableMessage = !sidecarStatus.configured
+      ? "Автообновление включено, но odds-service не подключён. Кэфы не обновятся, пока sidecar не запущен."
+      : sidecarStatus.ok
+        ? "Автообновление включено. odds-service подключён."
+        : "Автообновление включено, но odds-service сейчас недоступен.";
     await replaceFlowMessage(env, chatId, messageId, {
       text: overlayInstructions(origin, match, program, mode, speed, custom),
       reply_markup: readyMenuUnified(match, program, mode, speed, custom),
       disable_web_page_preview: true
     });
-    await answerCallback(env, callbackId, "Автообновление включено. Sidecar обновит кэфы в ближайшем цикле.");
+    await answerCallback(env, callbackId, enableMessage);
     return;
   }
 
@@ -2976,25 +3062,27 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       return;
     }
     const state = await getOddsStatePersistent(env, match.id);
-    if (!state.winlineUrl) {
-      await answerCallback(env, callbackId, "Сначала подключи ссылку Winline", true);
-      return;
-    }
+    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const sidecarStatus = await getSidecarConnectionStatus(env);
     let refreshMessage = "Запрос на обновление отправлен в sidecar.";
     if (state.mode === "manual" || state.autoUpdate === false) {
-      refreshMessage = "Сейчас включен ручной режим. Показал текущие кэфы.";
+      const summary = oddsSummary(custom, state);
+      refreshMessage = `Ручной режим: ${summary.home} / ${summary.away}. Автообновление выключено.`;
+    } else if (!state.winlineUrl) {
+      refreshMessage = "Сначала подключи ссылку Winline или введи кэфы вручную.";
+    } else if (!sidecarStatus.configured) {
+      refreshMessage = "odds-service не подключён. Можно вставить ссылку Winline, но автообновление заработает только после запуска sidecar. Сейчас можно ввести кэфы вручную.";
+    } else if (!sidecarStatus.ok) {
+      refreshMessage = "odds-service недоступен. Можно ввести кэфы вручную.";
     } else {
-      const refreshResult = await requestSidecarRefresh(match, env);
-      if (!refreshResult.configured) {
-        refreshMessage = "Sidecar API не настроен. Обновление выполнится в следующем цикле sidecar.";
-      } else if (!refreshResult.ok) {
+      const refreshResult = await requestSidecarRefresh(env, match.id);
+      if (!refreshResult.ok) {
         refreshMessage = `Не удалось запросить sidecar refresh: ${refreshResult.error || `HTTP ${refreshResult.status || "?"}`}`;
       }
     }
     const refreshed = await getOddsStatePersistent(env, match.id);
-    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
     await replaceFlowMessage(env, chatId, messageId, {
-      text: winlineMenuTextUnified(match, program, mode, custom, refreshed),
+      text: winlineMenuTextUnified(match, program, mode, custom, refreshed, sidecarStatus),
       reply_markup: winlineMenuUnified(match, program, mode, speed),
       disable_web_page_preview: true
     });
@@ -3017,8 +3105,9 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     });
     await removeActiveOddsMatch(env, match.id);
     const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const sidecarStatus = await getSidecarConnectionStatus(env);
     await replaceFlowMessage(env, chatId, messageId, {
-      text: winlineMenuTextUnified(match, program, mode, custom, state),
+      text: winlineMenuTextUnified(match, program, mode, custom, state, sidecarStatus),
       reply_markup: winlineMenuUnified(match, program, mode, speed),
       disable_web_page_preview: true
     });
@@ -3058,8 +3147,9 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       await removeActiveOddsMatch(env, match.id);
     }
     const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const sidecarStatus = await getSidecarConnectionStatus(env);
     await replaceFlowMessage(env, chatId, messageId, {
-      text: winlineMenuTextUnified(match, program, mode, custom, state),
+      text: winlineMenuTextUnified(match, program, mode, custom, state, sidecarStatus),
       reply_markup: winlineMenuUnified(match, program, mode, speed),
       disable_web_page_preview: true
     });
@@ -3115,8 +3205,6 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       return;
     }
     const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
-    const refreshed = null;
-    const nextState = { lastError: null };
     const prompt = await replaceFlowMessage(env, chatId, messageId, {
       text: [
         "Ручной ввод коэффициентов (fallback).",
@@ -3130,149 +3218,6 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
     if (replyMessageId) {
       rememberPendingEdit(chatId, replyMessageId, { matchId, program, mode, speed, block: "odds" });
     }
-    await answerCallback(env, callbackId);
-    return;
-  }
-
-  if (data.startsWith("owe|")) {
-    const [, matchId, program, mode, speed] = data.split("|");
-    const match = await findMatch(env, matchId);
-    if (!match) {
-      await answerCallback(env, callbackId, "Матч уже недоступен", true);
-      return;
-    }
-    const current = await getOddsStatePersistent(env, match.id);
-    if (!current.winlineUrl) {
-      const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
-      await replaceFlowMessage(env, chatId, messageId, {
-        text: winlineMenuTextUnified(match, program, mode, custom, current),
-        reply_markup: winlineMenuUnified(match, program, mode, speed),
-        disable_web_page_preview: true
-      });
-      await answerCallback(env, callbackId, "Сначала подключи ссылку Winline", true);
-      return;
-    }
-    const state = await setOddsStatePersistent(env, match.id, {
-      source: "winline",
-      mode: "sidecar_pending",
-      autoUpdate: true,
-      updatedAt: new Date().toISOString(),
-      lastError: "Waiting for sidecar",
-      stale: true
-    });
-    await upsertActiveOddsMatch(env, {
-      matchId: match.id,
-      winlineUrl: state.winlineUrl,
-      player1Name: state.player1Name || match.home?.name || "",
-      player2Name: state.player2Name || match.away?.name || "",
-      source: "winline",
-      mode: "sidecar_pending",
-      autoUpdate: true
-    });
-    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
-    await replaceFlowMessage(env, chatId, messageId, {
-      text: overlayInstructions(origin, match, program, mode, speed, custom),
-      reply_markup: readyMenuUnified(match, program, mode, speed, custom),
-      disable_web_page_preview: true
-    });
-    await answerCallback(env, callbackId, (refreshed || nextState).lastError ? "Авто включено, но есть ошибка обновления" : "Winline включен");
-    return;
-  }
-
-  if (data.startsWith("owr|")) {
-    const [, matchId, program, mode, speed] = data.split("|");
-    const match = await findMatch(env, matchId);
-    if (!match) {
-      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
-      return;
-    }
-    const state = await getOddsStatePersistent(env, match.id);
-    if (!state.winlineUrl) {
-      await answerCallback(env, callbackId, "Сначала подключи ссылку Winline", true);
-      return;
-    }
-    const refreshResult = await requestSidecarRefresh(match, env);
-    let refreshMessage = "Запрос на обновление отправлен в sidecar.";
-    if (!state.autoUpdate || state.mode === "manual") {
-      refreshMessage = "Сейчас включен ручной режим. Показал текущие кэфы.";
-    } else if (!refreshResult.configured) {
-      refreshMessage = "Sidecar API не настроен. Обновление выполнится в следующем цикле sidecar.";
-    } else if (!refreshResult.ok) {
-      refreshMessage = `Не удалось запросить sidecar refresh: ${refreshResult.error || `HTTP ${refreshResult.status || "?"}`}`;
-    }
-    const refreshed = await getOddsStatePersistent(env, match.id);
-    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
-    await replaceFlowMessage(env, chatId, messageId, {
-      text: winlineMenuTextUnified(match, program, mode, custom, refreshed),
-      reply_markup: winlineMenuUnified(match, program, mode, speed),
-      disable_web_page_preview: true
-    });
-    await answerCallback(env, callbackId, refreshed.lastError ? "Есть ошибка обновления" : "Обновлено");
-    return;
-  }
-
-  if (data.startsWith("owx|")) {
-    const [, matchId, program, mode, speed] = data.split("|");
-    const match = await findMatch(env, matchId);
-    if (!match) {
-      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
-      return;
-    }
-    const state = setOddsState(match.id, {
-      autoUpdate: false,
-      mode: "off",
-      updatedAt: new Date().toISOString(),
-      lastError: null
-    });
-    const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
-    await replaceFlowMessage(env, chatId, messageId, {
-      text: winlineMenuTextUnified(match, program, mode, custom, state),
-      reply_markup: winlineMenuUnified(match, program, mode, speed),
-      disable_web_page_preview: true
-    });
-    await answerCallback(env, callbackId, "Автообновление отключено");
-    return;
-  }
-
-  if (data.startsWith("owa|")) {
-    const [, matchId, program, mode, speed] = data.split("|");
-    const match = await findMatch(env, matchId);
-    if (!match) {
-      await answerCallback(env, callbackId, "Матч уже закончился или пропал из live", true);
-      return;
-    }
-    const candidate = await discoverWinlineCandidate(match, env);
-    if (!candidate || !candidate.winlineUrl) {
-      await answerCallback(env, callbackId, "Не нашёл надёжный матч. Лучше вставить ссылку вручную.", true);
-      return;
-    }
-    if (candidate.confidence < WINLINE_AUTODISCOVER_CONFIDENCE) {
-      await answerCallback(env, callbackId, "Нашёл слабое совпадение. Лучше вставь ссылку вручную.", true);
-      return;
-    }
-    const token = createWinlineCandidateToken();
-    pendingWinlineCandidatesByToken.set(token, {
-      createdAt: Date.now(),
-      matchId: match.id,
-      program,
-      mode,
-      speed,
-      winlineUrl: candidate.winlineUrl,
-      player1Odd: candidate.odds.player1 || null,
-      player2Odd: candidate.odds.player2 || null
-    });
-    await replaceFlowMessage(env, chatId, messageId, {
-      text: [
-        "Нашёл похожий матч Winline.",
-        "",
-        `${match.home.name} — ${match.away.name}`,
-        `Кэфы: ${candidate.odds.player1 || "—"} / ${candidate.odds.player2 || "—"}`,
-        "",
-        "Подключить?"
-      ].join("\n"),
-      reply_markup: winlineCandidateMenu(token, match, program, mode, speed),
-      disable_web_page_preview: true
-    });
     await answerCallback(env, callbackId);
     return;
   }
@@ -3310,8 +3255,10 @@ async function handleTelegramCallback(env, origin, callbackId, chatId, messageId
       return;
     }
     const custom = getOverlayCustom(chatId, match.id, program, mode, speed);
+    const oddsState = await getOddsStatePersistent(env, match.id);
+    const sidecarStatus = await getSidecarConnectionStatus(env);
     await replaceFlowMessage(env, chatId, messageId, {
-      text: winlineMenuTextUnified(match, program, mode, custom, getOddsState(match.id)),
+      text: winlineMenuTextUnified(match, program, mode, custom, oddsState, sidecarStatus),
       reply_markup: winlineMenuUnified(match, program, mode, speed),
       disable_web_page_preview: true
     });
@@ -3839,9 +3786,7 @@ function normalizeMatchSettings(settings) {
   else delete next.tickerSize;
 
   next.odds.provider = String(next.odds.provider || "winline");
-  if (!next.odds.mode) {
-    next.odds.mode = manualHomeOdd || manualAwayOdd ? "manual" : "auto";
-  }
+  next.odds.mode = manualHomeOdd || manualAwayOdd ? "manual" : (next.odds.mode || "auto");
   next.updatedAt = new Date().toISOString();
   return next;
 }
@@ -3869,6 +3814,73 @@ function updateMatchSettings(chatId, matchId, program, mode, speed, patch) {
 
 function setOverlayCustom(chatId, matchId, program, mode, speed, patch) {
   return updateMatchSettings(chatId, matchId, program, mode, speed, patch);
+}
+
+function patchOverlayUrl(rawUrl, patch = {}) {
+  if (!rawUrl) return rawUrl;
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch (_error) {
+    return rawUrl;
+  }
+
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value === undefined || value === null || value === "") {
+      url.searchParams.delete(key);
+    } else {
+      url.searchParams.set(key, String(value));
+    }
+  }
+
+  const oddsParam = url.searchParams.get("odds");
+  if (oddsParam && (Object.prototype.hasOwnProperty.call(patch, "homeOdd") || Object.prototype.hasOwnProperty.call(patch, "awayOdd"))) {
+    try {
+      const nested = new URL(oddsParam, url.origin);
+      if (Object.prototype.hasOwnProperty.call(patch, "homeOdd")) {
+        if (patch.homeOdd === undefined || patch.homeOdd === null || patch.homeOdd === "") nested.searchParams.delete("homeOdd");
+        else nested.searchParams.set("homeOdd", String(patch.homeOdd));
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "awayOdd")) {
+        if (patch.awayOdd === undefined || patch.awayOdd === null || patch.awayOdd === "") nested.searchParams.delete("awayOdd");
+        else nested.searchParams.set("awayOdd", String(patch.awayOdd));
+      }
+      url.searchParams.set("odds", `${nested.pathname}${nested.search}`);
+    } catch (_error) {
+      // Leave the top-level URL patched even if the nested odds URL is malformed.
+    }
+  }
+
+  return url.toString();
+}
+
+function overlayUrlPatchFromSettingsPatch(patch = {}) {
+  const input = isPlainObject(patch) ? patch : {};
+  const out = {};
+  const copyKeys = [
+    "homeName",
+    "awayName",
+    "homeCode",
+    "awayCode",
+    "homeCountry",
+    "awayCountry",
+    "stage",
+    "panel",
+    "ticker",
+    "homeOdd",
+    "awayOdd"
+  ];
+  for (const key of copyKeys) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) out[key] = input[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "statsDelaySec")) {
+    const delay = statsDelaySeconds(input.statsDelaySec);
+    out.delay = delay > 0 ? delay : "";
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "tickerSize")) {
+    out.height = TICKER_SIZES[tickerSizeKey(input.tickerSize)]?.param || "normal";
+  }
+  return out;
 }
 
 function pendingEditKey(chatId, replyMessageId) {
@@ -4045,7 +4057,29 @@ function winlineMenuUnified(match, program, mode, speed) {
   ]);
 }
 
-function winlineMenuTextUnified(match, program, mode, custom = {}, state = null) {
+function sidecarStatusText(oddsState, sidecarStatus = null) {
+  if (oddsState?.mode === "manual" || oddsState?.source === "manual") {
+    return "ручной режим, автообновление выключено";
+  }
+  if (oddsState?.autoUpdate === false) {
+    return "автообновление выключено";
+  }
+  if (!sidecarStatus) {
+    return oddsState?.lastError || "статус odds-service не проверен";
+  }
+  if (!sidecarStatus.configured) {
+    return "odds-service не подключён. Ссылка сохранена, но автоматические кэфы не обновятся, пока sidecar не запущен.";
+  }
+  if (!sidecarStatus.ok) {
+    return "odds-service недоступен. Можно ввести кэфы вручную.";
+  }
+  if (oddsState?.mode === "sidecar_pending" || oddsState?.mode === "url" || oddsState?.autoUpdate) {
+    return "odds-service подключён, ждём следующий цикл обновления.";
+  }
+  return "odds-service подключён";
+}
+
+function winlineMenuTextUnified(match, program, mode, custom = {}, state = null, sidecarStatus = null) {
   const oddsState = state || getOddsState(match.id);
   const summary = oddsSummary(custom, oddsState);
   const stale = staleOdds(oddsState, null) ? "да" : "нет";
@@ -4062,6 +4096,7 @@ function winlineMenuTextUnified(match, program, mode, custom = {}, state = null)
     `Текущие кэфы: ${summary.home} / ${summary.away}`,
     `Автообновление: ${auto}`,
     `Ссылка Winline: ${link}`,
+    `Статус: ${sidecarStatusText(oddsState, sidecarStatus)}`,
     `Stale: ${stale}`
   ];
   if (oddsState.lastError) lines.push(`Ошибка: ${oddsState.lastError}`);
@@ -4108,12 +4143,13 @@ async function applyWinlineLinkFromChat(env, origin, chatId, parsed) {
     });
   } catch (error) {
     const customError = getOverlayCustom(chatId, match.id, parsed.program, modeKey, speedKey);
+    const sidecarStatus = await getSidecarConnectionStatus(env);
     await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
       text: [
         "⚠️ Не получилось подключить Winline.",
         error?.message || String(error),
         "",
-                winlineMenuTextUnified(match, parsed.program, modeKey, customError, getOddsState(match.id))
+        winlineMenuTextUnified(match, parsed.program, modeKey, customError, await getOddsStatePersistent(env, match.id), sidecarStatus)
       ].join("\n"),
       reply_markup: winlineMenuUnified(match, parsed.program, modeKey, speedKey),
       disable_web_page_preview: true
@@ -4123,21 +4159,27 @@ async function applyWinlineLinkFromChat(env, origin, chatId, parsed) {
 
   const custom = getOverlayCustom(chatId, match.id, parsed.program, modeKey, speedKey);
   const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+  const sidecarStatus = await getSidecarConnectionStatus(env);
   const linkedHome = state?.odds?.player1 ?? null;
   const linkedAway = state?.odds?.player2 ?? null;
   const linkedOddsLine = linkedHome && linkedAway
     ? `Текущие кэфы: ${linkedHome} / ${linkedAway}`
     : "Кэфы исхода матча сейчас не найдены: - / -";
+  const autoLine = !sidecarStatus.configured
+    ? "odds-service не подключён. Ссылка сохранена, но автоматические кэфы не обновятся, пока sidecar не запущен."
+    : sidecarStatus.ok
+      ? "odds-service подключён, ждём следующий цикл обновления."
+      : "odds-service недоступен. Можно ввести кэфы вручную.";
   await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
     text: [
       "✅ Матч Winline подключён.",
       "",
       linkedOddsLine,
-      state.lastError ? `⚠️ ${state.lastError}` : "Автообновление включено.",
+      autoLine,
       "",
       `URL:\n${url}`,
       "",
-      winlineMenuTextUnified(match, parsed.program, modeKey, custom, getOddsState(match.id))
+      winlineMenuTextUnified(match, parsed.program, modeKey, custom, await getOddsStatePersistent(env, match.id), sidecarStatus)
     ].join("\n"),
     reply_markup: winlineMenuUnified(match, parsed.program, modeKey, speedKey),
     disable_web_page_preview: true
@@ -4145,11 +4187,17 @@ async function applyWinlineLinkFromChat(env, origin, chatId, parsed) {
 }
 
 async function discoverWinlineCandidate(match, env) {
+  if (!oddsConfig(env).oddsServiceBaseUrl) {
+    return {
+      ok: false,
+      message: "Автопоиск Winline сейчас недоступен: odds-service не подключён. Можно вставить ссылку Winline вручную или ввести кэфы руками."
+    };
+  }
   const discovered = await discoverWinlineCandidateViaSidecar(match, env);
   if (!discovered.configured) {
     return {
       ok: false,
-      message: "Автопоиск сейчас недоступен: не подключён odds-service. Можно вставить ссылку Winline вручную."
+      message: "Автопоиск Winline сейчас недоступен: odds-service не подключён. Можно вставить ссылку Winline вручную или ввести кэфы руками."
     };
   }
   if (!discovered.ok) {
@@ -4163,7 +4211,7 @@ async function discoverWinlineCandidate(match, env) {
   if (!candidate?.winlineUrl) {
     return {
       ok: false,
-      message: "Sidecar не вернул надёжных кандидатов. Лучше вставить ссылку Winline вручную."
+      message: "Sidecar не вернул кандидатов. Можно вставить ссылку Winline вручную или ввести кэфы руками."
     };
   }
   const player1 = parseOddValue(candidate?.odds?.player1 ?? candidate?.player1);
@@ -4219,6 +4267,8 @@ async function applyEditBlock(env, origin, chatId, parsed, block) {
 
   const modeKey = BOT_MODES.has(parsed.mode) ? parsed.mode : "stats";
   const speedKey = TICKER_SPEEDS[parsed.speed] ? parsed.speed : "normal";
+  const beforeCustom = getOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey);
+  const beforeUrl = overlayPageUrl(origin, match, modeKey, speedKey, beforeCustom);
   const patch = {};
 
   if (block === "names") {
@@ -4242,7 +4292,7 @@ async function applyEditBlock(env, origin, chatId, parsed, block) {
   }
 
   const custom = setOverlayCustom(chatId, parsed.matchId, parsed.program, modeKey, speedKey, patch);
-  const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+  const url = patchOverlayUrl(beforeUrl, overlayUrlPatchFromSettingsPatch(patch));
   await replaceFlowMessage(env, chatId, getFlowMessageId(chatId), {
     text: [
       "Готово, блок обновлен.",
@@ -4459,7 +4509,7 @@ function stageLabel(match) {
   return "Скоро";
 }
 
-function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
+function overlayInstructions(origin, match, program, mode, speed, custom = {}, urlOverride = "") {
   const programKey = PROGRAM_LABELS[program] ? program : "obs";
   const modeKey = BOT_MODES.has(mode) ? mode : "stats";
   const speedKey = TICKER_SPEEDS[speed] ? speed : "normal";
@@ -4470,7 +4520,7 @@ function overlayInstructions(origin, match, program, mode, speed, custom = {}) {
   const winlineStatus = oddsState.winlineUrl
     ? (oddsState.autoUpdate ? "подключено" : "подключено (пауза)")
     : "не подключено";
-  const url = overlayPageUrl(origin, match, modeKey, speedKey, custom);
+  const url = urlOverride || overlayPageUrl(origin, match, modeKey, speedKey, custom);
   if (modeKey === "ticker") {
     const tickerLines = [
       "\u0421\u043a\u043e\u0440\u043e\u0441\u0442\u044c: \u043c\u0435\u043d\u044f\u0439 \u0432 URL \u0447\u0435\u0440\u0435\u0437 ticker (\u043f\u0440\u0438\u043c\u0435\u0440: ticker=70)",
