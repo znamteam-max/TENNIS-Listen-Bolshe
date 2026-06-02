@@ -1,0 +1,22 @@
+services:
+  overlay-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - server/.env
+    restart: unless-stopped
+    volumes:
+      - ./server/data:/app/data
+
+  odds-service:
+    build:
+      context: .
+      dockerfile: odds-service/Dockerfile
+    env_file:
+      - odds-service/.env
+    restart: unless-stopped
+    depends_on:
+      - overlay-server

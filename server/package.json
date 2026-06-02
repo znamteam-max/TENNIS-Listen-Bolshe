@@ -1,0 +1,14 @@
+{
+  "name": "listen-bolshe-overlay-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node src/app.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.3"
+  }
+}
