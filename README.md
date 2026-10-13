@@ -4,13 +4,13 @@ Cloudflare Worker для live-теннисного оверлея и отдел�
 
 ## Production
 
-- Overlay: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/overlay.html`
-- Standalone news ticker: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/news-ticker.html`
-- Health: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/health`
-- Live matches API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/live-matches`
-- Live tennis news API: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/news/tennis`
-- Winline odds API hook: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/odds/winline`
-- Telegram webhook: `https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/telegram/webhook`
+- Overlay: `https://tennis-listen-bolshe-overlay.rngn.workers.dev/overlay.html`
+- Standalone news ticker: `https://tennis-listen-bolshe-overlay.rngn.workers.dev/news-ticker.html`
+- Health: `https://tennis-listen-bolshe-overlay.rngn.workers.dev/api/health`
+- Live matches API: `https://tennis-listen-bolshe-overlay.rngn.workers.dev/api/live-matches`
+- Live tennis news API: `https://tennis-listen-bolshe-overlay.rngn.workers.dev/api/news/tennis`
+- Winline odds API hook: `https://tennis-listen-bolshe-overlay.rngn.workers.dev/api/odds/winline`
+- Telegram webhook: `https://tennis-listen-bolshe-overlay.rngn.workers.dev/telegram/webhook`
 
 ## Telegram bot
 
@@ -42,7 +42,7 @@ The API scans the first Sports.ru tennis news pages, removes politically sensiti
 Standalone ticker for other projects:
 
 ```text
-https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/news-ticker.html?ticker=slow&height=normal
+https://tennis-listen-bolshe-overlay.rngn.workers.dev/news-ticker.html?ticker=slow&height=normal
 ```
 
 Browser Source width: `1920`. Height depends on the `height` query param. Query params:

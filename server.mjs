@@ -8,7 +8,7 @@ import { getFlashscoreMatch } from "./lib/flashscore-adapter.mjs";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(__dirname, "public");
 const port = Number(process.env.PORT || 5173);
-const productionNewsUrl = "https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev/api/news/tennis";
+const productionNewsUrl = "https://tennis-listen-bolshe-overlay.rngn.workers.dev/api/news/tennis";
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],

@@ -21,7 +21,7 @@ export function getConfig() {
     publicBaseUrl: cleanUrl(process.env.PUBLIC_BASE_URL, "http://localhost:3000"),
     workerFallbackBaseUrl: cleanUrl(
       process.env.WORKER_FALLBACK_BASE_URL,
-      "https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev"
+      "https://tennis-listen-bolshe-overlay.rngn.workers.dev"
     ),
     telegramBotToken: String(process.env.TELEGRAM_BOT_TOKEN || "").trim(),
     telegramChatId: String(process.env.TELEGRAM_CHAT_ID || "").trim(),
